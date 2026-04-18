@@ -1,0 +1,4 @@
+aiogram
+pocketoptionapi-async
+pandas
+pandas_ta

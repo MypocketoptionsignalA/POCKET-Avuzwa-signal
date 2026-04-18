@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import re
 import pandas as pd
 import pandas_ta as ta
 from aiogram import Bot, Dispatcher, types
@@ -14,10 +15,11 @@ logger = logging.getLogger(__name__)
 # Environment variables (to be set by user)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 POCKET_OPTION_SSID = os.getenv("POCKET_OPTION_SSID")
-IS_DEMO = os.getenv("IS_DEMO", "True").lower() == "true"
+IS_DEMO = os.getenv("IS_DEMO", "False").lower() == "true" # Default to real market
 TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", "1.0"))
 TRADE_DURATION = int(os.getenv("TRADE_DURATION", "60"))
 ASSETS = os.getenv("ASSETS", "EURUSD_otc,GBPUSD_otc").split(",")
+SIGNAL_BOT_USERNAME = os.getenv("SIGNAL_BOT_USERNAME") # Username of the bot sending signals
 
 # Initialize Telegram Bot
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -45,10 +47,10 @@ async def get_signal(asset):
         candles.ta.bbands(length=20, std=2, append=True)
         
         last_row = candles.iloc[-1]
-        rsi = last_row['RSI_14']
-        lower_bb = last_row['BBL_20_2.0']
-        upper_bb = last_row['BBU_20_2.0']
-        close = last_row['close']
+        rsi = last_row["RSI_14"]
+        lower_bb = last_row["BBL_20_2.0"]
+        upper_bb = last_row["BBU_20_2.0"]
+        close = last_row["close"]
         
         if close < lower_bb and rsi < 30:
             return OrderDirection.CALL
@@ -60,34 +62,24 @@ async def get_signal(asset):
         logger.error(f"Error getting signal for {asset}: {e}")
         return None
 
-async def trading_loop():
-    global is_running
-    while is_running:
-        for asset in ASSETS:
-            signal = await get_signal(asset)
-            if signal:
-                direction_str = "CALL" if signal == OrderDirection.CALL else "PUT"
-                message = f"🚨 Signal for {asset}: {direction_str}\nExecuting trade..."
-                await bot.send_message(chat_id=os.getenv("CHAT_ID"), text=message)
-                
-                try:
-                    order = await po_client.place_order(
-                        asset=asset, 
-                        amount=TRADE_AMOUNT, 
-                        direction=signal, 
-                        duration=TRADE_DURATION
-                    )
-                    await bot.send_message(
-                        chat_id=os.getenv("CHAT_ID"), 
-                        text=f"✅ Trade placed: {order.order_id}\nAmount: {TRADE_AMOUNT}\nDirection: {direction_str}"
-                    )
-                except Exception as e:
-                    await bot.send_message(
-                        chat_id=os.getenv("CHAT_ID"), 
-                        text=f"❌ Failed to place trade: {e}"
-                    )
-            
-        await asyncio.sleep(60) # Check every minute
+async def execute_trade(asset, direction):
+    try:
+        order = await po_client.place_order(
+            asset=asset, 
+            amount=TRADE_AMOUNT, 
+            direction=direction, 
+            duration=TRADE_DURATION
+        )
+        direction_str = "CALL" if direction == OrderDirection.CALL else "PUT"
+        await bot.send_message(
+            chat_id=os.getenv("CHAT_ID"), 
+            text=f"✅ Trade placed: {order.order_id}\nAmount: {TRADE_AMOUNT}\nDirection: {direction_str}\nAsset: {asset}"
+        )
+    except Exception as e:
+        await bot.send_message(
+            chat_id=os.getenv("CHAT_ID"), 
+            text=f"❌ Failed to place trade for {asset}: {e}"
+        )
 
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
@@ -99,8 +91,7 @@ async def run_handler(message: types.Message):
     if not is_running:
         is_running = True
         os.environ["CHAT_ID"] = str(message.chat.id)
-        asyncio.create_task(trading_loop())
-        await message.answer("Bot started! Monitoring assets...")
+        await message.answer("Bot started! Listening for signals...")
     else:
         await message.answer("Bot is already running.")
 
@@ -110,9 +101,43 @@ async def stop_handler(message: types.Message):
     is_running = False
     await message.answer("Bot stopped.")
 
+@dp.message()
+async def signal_listener(message: types.Message):
+    if not is_running:
+        return
+
+    # Check if the message is from the designated signal bot
+    if SIGNAL_BOT_USERNAME and message.from_user.username != SIGNAL_BOT_USERNAME:
+        logger.info(f"Ignoring message from {message.from_user.username}. Not the signal bot.")
+        return
+
+    text = message.text.upper() if message.text else ""
+    logger.info(f"Received message: {text}")
+
+    # Regex to find signal and asset
+    match = re.search(r"(BUY|SELL) SIGNAL!.*(USD/JPY|GBP/USD|GBP/JPY|EUR/USD|AUD/USD)_OTC", text)
+    if match:
+        signal_type = match.group(1)
+        asset_raw = match.group(2)
+        asset = asset_raw.replace("/", "") + "_otc" # Format to EURUSD_otc
+
+        direction = None
+        if signal_type == "BUY":
+            direction = OrderDirection.CALL
+        elif signal_type == "SELL":
+            direction = OrderDirection.PUT
+        
+        if direction:
+            await bot.send_message(chat_id=os.getenv("CHAT_ID"), text=f"🚨 Signal detected for {asset}: {signal_type}. Executing trade...")
+            await execute_trade(asset, direction)
+        else:
+            logger.warning(f"Could not determine trade direction from signal: {text}")
+    else:
+        logger.info(f"No trade signal detected in message: {text}")
+
 async def main():
     await po_client.connect()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()
