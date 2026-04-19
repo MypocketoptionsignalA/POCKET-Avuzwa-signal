@@ -1,4 +1,5 @@
 aiogram
 pocketoptionapi-async
-pandas
+pandas==2.2.2
 pandas_ta
+numpy<2.0.0
