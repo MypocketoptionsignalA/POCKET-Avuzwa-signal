@@ -88,7 +88,7 @@ async def send_signal_message(asset, direction):
     
     await bot.send_message(
         chat_id=chat_id,
-        text=f"{direction_emoji} {signal_text} {asset.replace("_otc", " OTC")}\nEnter NOW 🔥"
+        text=f"{direction_emoji} {signal_text} {asset.replace('_otc', ' OTC')}\nEnter NOW 🔥"
     )
 
 # Create a persistent ReplyKeyboardMarkup with asset buttons in a square grid
@@ -158,7 +158,7 @@ async def asset_button_handler(message: types.Message):
             break
     
     if found_asset:
-        await bot.send_message(chat_id=chat_id, text=f"Getting signal for {found_asset.replace("_otc", " OTC")}...")
+        await bot.send_message(chat_id=chat_id, text=f"Getting signal for {found_asset.replace('_otc', ' OTC')}...")
         signal = await get_signal(found_asset)
         # The get_signal function is now guaranteed to return a signal
         await send_signal_message(found_asset, signal)
@@ -171,4 +171,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main()))
+    asyncio.run(main())
