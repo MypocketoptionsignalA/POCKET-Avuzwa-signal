@@ -6,7 +6,7 @@ import pandas as pd
 import pandas_ta as ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from pocketoptionapi_async import AsyncPocketOptionClient, OrderDirection
 
 # Configure logging
@@ -91,18 +91,17 @@ async def send_signal_message(asset, direction):
         text=f"{direction_emoji} {signal_text} {asset.replace("_otc", " OTC")}\nEnter NOW 🔥"
     )
 
-# Create a persistent InlineKeyboardMarkup with asset buttons
-def get_asset_inline_keyboard():
+# Create a persistent ReplyKeyboardMarkup with asset buttons in a square grid
+def get_asset_reply_keyboard():
     keyboard_buttons = []
     for asset_name in ASSETS:
         # Format asset name for button (e.g., USD/JPY OTC)
         display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
-        # Use callback_data to trigger signal generation for the specific asset
-        keyboard_buttons.append(InlineKeyboardButton(text=f"🇬🇧 {display_asset_name}", callback_data=f"signal_{asset_name}"))
+        keyboard_buttons.append(KeyboardButton(text=f"🇬🇧 {display_asset_name}"))
     
-    # Arrange buttons in rows (e.g., 1 button per row for a vertical list)
-    rows = [[btn] for btn in keyboard_buttons]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    # Arrange buttons in rows of 2 for a square grid look
+    rows = [keyboard_buttons[i:i + 2] for i in range(0, len(keyboard_buttons), 2)]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=False)
 
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
@@ -110,31 +109,38 @@ async def start_handler(message: types.Message):
     chat_id = message.chat.id
     await message.answer(
         "Welcome to Pocket Option Signal Bot!\nTap an asset below to get an instant signal.",
-        reply_markup=get_asset_inline_keyboard()
+        reply_markup=get_asset_reply_keyboard()
     )
 
 @dp.message(Command("run"))
 async def run_handler(message: types.Message):
     global chat_id
     chat_id = message.chat.id
-    await message.answer("Bot is ready! Tap an asset below to get a signal.", reply_markup=get_asset_inline_keyboard())
+    await message.answer("Bot is ready! Tap an asset below to get a signal.", reply_markup=get_asset_reply_keyboard())
 
 @dp.message(Command("stop"))
 async def stop_handler(message: types.Message):
-    await message.answer("Bot stopped. To get signals again, use /run or /start.")
+    await message.answer("Bot stopped. To get signals again, use /run or /start.", reply_markup=types.ReplyKeyboardRemove())
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("signal_"))
-async def process_signal_callback(callback_query: types.CallbackQuery):
+@dp.message()
+async def asset_button_handler(message: types.Message):
     global chat_id
-    chat_id = callback_query.message.chat.id # Ensure chat_id is set for callbacks
+    chat_id = message.chat.id
+
+    # Check if the message text matches one of our asset display names
+    for asset_name in ASSETS:
+        display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
+        # Remove the flag emoji for comparison if present in message.text
+        message_text_cleaned = re.sub(r'^[🇬🇧🇪🇺🇦🇺🇳🇿🇨🇦🇯🇵]+ ', '', message.text) # Remove flag emojis from start
+        if message_text_cleaned == display_asset_name:
+            await bot.send_message(chat_id=chat_id, text=f"Getting signal for {display_asset_name}...")
+            signal = await get_signal(asset_name)
+            # The get_signal function is now guaranteed to return a signal
+            await send_signal_message(asset_name, signal)
+            return
     
-    asset = callback_query.data.split("_")[1]
-    
-    await bot.answer_callback_query(callback_query.id, text=f"Getting signal for {asset.replace("_otc", " OTC")}...")
-    
-    signal = await get_signal(asset)
-    # The get_signal function is now guaranteed to return a signal
-    await send_signal_message(asset, signal)
+    # If it's not an asset button, just acknowledge or ignore
+    await message.answer("Please use the asset buttons to get signals.", reply_markup=get_asset_reply_keyboard())
 
 async def main():
     await po_client.connect() # Connect to Pocket Option for market data
