@@ -6,8 +6,8 @@ import pandas as pd
 import pandas_ta as ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pocketoptionapi_async import OrderDirection # Only import for enum, not client
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from pocketoptionapi_async import AsyncPocketOptionClient, OrderDirection
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -15,22 +15,25 @@ logger = logging.getLogger(__name__)
 
 # Environment variables (to be set by user)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-# POCKET_OPTION_SSID is no longer needed for signal-only bot
-# IS_DEMO is no longer needed for signal-only bot
-# TRADE_AMOUNT is no longer needed for signal-only bot
-# TRADE_DURATION is no longer needed for signal-only bot
-ASSETS = os.getenv("ASSETS", "EURUSD_otc,GBPUSD_otc").split(",")
+POCKET_OPTION_SSID = os.getenv("POCKET_OPTION_SSID") # Re-introducing for market data
+IS_DEMO = os.getenv("IS_DEMO", "False").lower() == "true" # Re-introducing for market data
+
+# Expanded ASSETS list
+ASSETS = [
+    "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "GBPJPY_otc", "AUDUSD_otc",
+    "USDCAD_otc", "EURJPY_otc", "AUDJPY_otc", "NZDUSD_otc", "EURGBP_otc"
+]
 
 # Initialize Telegram Bot
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
+# Initialize Pocket Option Client (re-introduced for market data)
+po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
+
 # Global state
 is_running = False
 chat_id = None
-
-# Pocket Option Client is no longer needed for signal-only bot
-# po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
 
 async def get_signal(asset):
     """
@@ -38,19 +41,30 @@ async def get_signal(asset):
     - CALL: Price below lower BB and RSI < 30
     - PUT: Price above upper BB and RSI > 70
     """
-    # For a signal-only bot, we still need to get market data to generate signals.
-    # However, since we are removing the PocketOptionClient, we need a way to get candles.
-    # For now, I will simulate signals or assume an external data source.
-    # If you want real-time signals, you would need to integrate a market data API here.
-    # For demonstration, I'll return a dummy signal.
-    await asyncio.sleep(5) # Simulate market data fetching
-    # In a real scenario, you would fetch real-time data and apply indicators.
-    # For now, let's alternate signals for demonstration.
-    if asset == "EURUSD_otc":
-        return OrderDirection.CALL if asyncio.get_event_loop().time() % 2 == 0 else OrderDirection.PUT
-    elif asset == "GBPUSD_otc":
-        return OrderDirection.PUT if asyncio.get_event_loop().time() % 2 == 0 else OrderDirection.CALL
-    return None
+    try:
+        candles = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
+        if candles.empty:
+            return None
+        
+        # Calculate indicators
+        candles.ta.rsi(length=14, append=True)
+        candles.ta.bbands(length=20, std=2, append=True)
+        
+        last_row = candles.iloc[-1]
+        rsi = last_row["RSI_14"]
+        lower_bb = last_row["BBL_20_2.0"]
+        upper_bb = last_row["BBU_20_2.0"]
+        close = last_row["close"]
+        
+        if close < lower_bb and rsi < 30:
+            return OrderDirection.CALL
+        elif close > upper_bb and rsi > 70:
+            return OrderDirection.PUT
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error getting signal for {asset}: {e}")
+        return None
 
 async def send_signal_message(asset, direction):
     if not chat_id:
@@ -60,13 +74,11 @@ async def send_signal_message(asset, direction):
     direction_emoji = "⬆️" if direction == OrderDirection.CALL else "⬇️"
     signal_text = "BUY SIGNAL!" if direction == OrderDirection.CALL else "SELL SIGNAL!"
     
-    # Create inline keyboard for assets
+    # Create inline keyboard for assets (as in previous version, but now for display)
     keyboard_buttons = []
     for asset_name in ASSETS:
-        # Format asset name for button (e.g., EUR/USD OTC)
-        display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/")
-        # Buttons will just show the asset, not trigger trades
-        keyboard_buttons.append(InlineKeyboardButton(text=f"🇬🇧 {display_asset_name}", callback_data=f"view_{asset_name}"))
+        display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
+        keyboard_buttons.append(InlineKeyboardButton(text=f"🇬🇧 {display_asset_name}", callback_data=f"get_signal_{asset_name}"))
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[btn] for btn in keyboard_buttons])
 
@@ -76,19 +88,25 @@ async def send_signal_message(asset, direction):
         reply_markup=keyboard
     )
 
-async def signal_generation_loop():
-    global is_running
-    while is_running:
-        for asset in ASSETS:
-            signal = await get_signal(asset)
-            if signal:
-                await send_signal_message(asset, signal)
-            
-        await asyncio.sleep(60) # Check every minute for new signals
+# Create a persistent ReplyKeyboardMarkup with asset buttons
+def get_asset_keyboard():
+    keyboard_buttons = []
+    for asset_name in ASSETS:
+        display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
+        keyboard_buttons.append(KeyboardButton(text=display_asset_name))
+    
+    # Arrange buttons in rows (e.g., 2 buttons per row)
+    rows = [keyboard_buttons[i:i + 2] for i in range(0, len(keyboard_buttons), 2)]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=False)
 
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
-    await message.answer("Welcome to Pocket Option Signal Bot!\nUse /run to start signal generation, and /stop to stop.")
+    global chat_id
+    chat_id = message.chat.id
+    await message.answer(
+        "Welcome to Pocket Option Signal Bot!\nClick an asset button below to get an instant signal.",
+        reply_markup=get_asset_keyboard()
+    )
 
 @dp.message(Command("run"))
 async def run_handler(message: types.Message):
@@ -96,8 +114,7 @@ async def run_handler(message: types.Message):
     if not is_running:
         is_running = True
         chat_id = message.chat.id
-        asyncio.create_task(signal_generation_loop())
-        await message.answer("Bot started! Generating signals...")
+        await message.answer("Bot started! Click an asset button to get a signal.", reply_markup=get_asset_keyboard())
     else:
         await message.answer("Bot is already running.")
 
@@ -107,15 +124,30 @@ async def stop_handler(message: types.Message):
     is_running = False
     await message.answer("Bot stopped.")
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("view_"))
-async def process_callback_button(callback_query: types.CallbackQuery):
-    asset = callback_query.data.split("_")[1]
-    await bot.answer_callback_query(callback_query.id, text=f"Viewing signals for {asset}...")
-    # No trade execution here, just acknowledgment
+@dp.message()
+async def asset_button_handler(message: types.Message):
+    global chat_id
+    chat_id = message.chat.id
+
+    # Check if the message text matches one of our asset display names
+    for asset_name in ASSETS:
+        display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
+        if message.text == display_asset_name:
+            await message.answer(f"Getting signal for {display_asset_name}...")
+            signal = await get_signal(asset_name)
+            if signal:
+                await send_signal_message(asset_name, signal)
+            else:
+                await message.answer(f"No clear signal for {display_asset_name} at the moment.")
+            return
+    
+    # If it's not an asset button, just acknowledge or ignore
+    if message.text not in [btn.text for row in get_asset_keyboard().keyboard for btn in row]:
+        await message.answer("Please use the asset buttons to get signals.", reply_markup=get_asset_keyboard())
 
 async def main():
-    # No Pocket Option client connection needed for signal-only bot
+    await po_client.connect() # Connect to Pocket Option for market data
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()))
