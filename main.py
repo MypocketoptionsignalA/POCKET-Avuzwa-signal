@@ -3,7 +3,7 @@ import asyncio
 import logging
 import re
 import pandas as pd
-import pandas_ta as ta
+import numpy as np
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
@@ -34,6 +34,13 @@ po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
 # Global state
 chat_id = None
 
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
 async def get_signal(asset):
     """
     Strategy: RSI + Bollinger Bands with a fallback to SMA trend.
@@ -47,10 +54,18 @@ async def get_signal(asset):
             logger.warning(f"Not enough candle data for {asset} to generate a signal. Using default CALL.")
             return OrderDirection.CALL # Default to CALL if not enough data
         
-        # Calculate indicators
-        candles.ta.rsi(length=14, append=True)
-        candles.ta.bbands(length=20, std=2, append=True)
-        candles.ta.sma(length=10, append=True) # Add SMA for fallback
+        # Calculate indicators manually using pandas
+        # SMA 10
+        candles['SMA_10'] = candles['close'].rolling(window=10).mean()
+        
+        # RSI 14
+        candles['RSI_14'] = calculate_rsi(candles['close'], 14)
+        
+        # Bollinger Bands (20, 2)
+        candles['SMA_20'] = candles['close'].rolling(window=20).mean()
+        candles['STD_20'] = candles['close'].rolling(window=20).std()
+        candles['BBU_20_2.0'] = candles['SMA_20'] + (candles['STD_20'] * 2)
+        candles['BBL_20_2.0'] = candles['SMA_20'] - (candles['STD_20'] * 2)
         
         last_row = candles.iloc[-1]
         rsi = last_row["RSI_14"]
