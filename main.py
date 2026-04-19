@@ -6,6 +6,7 @@ import pandas as pd
 import pandas_ta as ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pocketoptionapi_async import AsyncPocketOptionClient, OrderDirection
 
 # Configure logging
@@ -19,7 +20,6 @@ IS_DEMO = os.getenv("IS_DEMO", "False").lower() == "true" # Default to real mark
 TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", "1.0"))
 TRADE_DURATION = int(os.getenv("TRADE_DURATION", "60"))
 ASSETS = os.getenv("ASSETS", "EURUSD_otc,GBPUSD_otc").split(",")
-SIGNAL_BOT_USERNAME = os.getenv("SIGNAL_BOT_USERNAME") # Username of the bot sending signals
 
 # Initialize Telegram Bot
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -30,6 +30,7 @@ po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
 
 # Global state
 is_running = False
+chat_id = None
 
 async def get_signal(asset):
     """
@@ -63,6 +64,9 @@ async def get_signal(asset):
         return None
 
 async def execute_trade(asset, direction):
+    if not chat_id:
+        logger.warning("Chat ID not set, cannot send trade execution message.")
+        return
     try:
         order = await po_client.place_order(
             asset=asset, 
@@ -72,26 +76,61 @@ async def execute_trade(asset, direction):
         )
         direction_str = "CALL" if direction == OrderDirection.CALL else "PUT"
         await bot.send_message(
-            chat_id=os.getenv("CHAT_ID"), 
+            chat_id=chat_id, 
             text=f"✅ Trade placed: {order.order_id}\nAmount: {TRADE_AMOUNT}\nDirection: {direction_str}\nAsset: {asset}"
         )
     except Exception as e:
         await bot.send_message(
-            chat_id=os.getenv("CHAT_ID"), 
+            chat_id=chat_id, 
             text=f"❌ Failed to place trade for {asset}: {e}"
         )
 
+async def send_signal_message(asset, direction):
+    if not chat_id:
+        logger.warning("Chat ID not set, cannot send signal message.")
+        return
+
+    direction_emoji = "⬆️" if direction == OrderDirection.CALL else "⬇️"
+    signal_text = "BUY SIGNAL!" if direction == OrderDirection.CALL else "SELL SIGNAL!"
+    
+    # Create inline keyboard for assets
+    keyboard_buttons = []
+    for asset_name in ASSETS:
+        # Format asset name for button (e.g., EUR/USD OTC)
+        display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/")
+        keyboard_buttons.append(InlineKeyboardButton(text=f"🇬🇧 {display_asset_name}", callback_data=f"trade_{asset_name}_{direction.value}"))
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[btn] for btn in keyboard_buttons])
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text=f"{direction_emoji} {signal_text} {asset.replace('_otc', ' OTC')}\nEnter NOW 🔥",
+        reply_markup=keyboard
+    )
+
+async def trading_loop():
+    global is_running
+    while is_running:
+        for asset in ASSETS:
+            signal = await get_signal(asset)
+            if signal:
+                await send_signal_message(asset, signal)
+                await execute_trade(asset, signal) # Auto-trade based on generated signal
+            
+        await asyncio.sleep(60) # Check every minute for new signals
+
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
-    await message.answer("Welcome to Pocket Option Signal Bot!\nUse /run to start trading and /stop to stop.")
+    await message.answer("Welcome to Pocket Option Signal Bot!\nUse /run to start signal generation and trading, and /stop to stop.")
 
 @dp.message(Command("run"))
 async def run_handler(message: types.Message):
-    global is_running
+    global is_running, chat_id
     if not is_running:
         is_running = True
-        os.environ["CHAT_ID"] = str(message.chat.id)
-        await message.answer("Bot started! Listening for signals...")
+        chat_id = message.chat.id
+        asyncio.create_task(trading_loop())
+        await message.answer("Bot started! Generating signals and trading...")
     else:
         await message.answer("Bot is already running.")
 
@@ -101,43 +140,20 @@ async def stop_handler(message: types.Message):
     is_running = False
     await message.answer("Bot stopped.")
 
-@dp.message()
-async def signal_listener(message: types.Message):
-    if not is_running:
-        return
-
-    # Check if the message is from the designated signal bot
-    if SIGNAL_BOT_USERNAME and message.from_user.username != SIGNAL_BOT_USERNAME:
-        logger.info(f"Ignoring message from {message.from_user.username}. Not the signal bot.")
-        return
-
-    text = message.text.upper() if message.text else ""
-    logger.info(f"Received message: {text}")
-
-    # Regex to find signal and asset
-    match = re.search(r"(BUY|SELL) SIGNAL!.*(USD/JPY|GBP/USD|GBP/JPY|EUR/USD|AUD/USD)_OTC", text)
-    if match:
-        signal_type = match.group(1)
-        asset_raw = match.group(2)
-        asset = asset_raw.replace("/", "") + "_otc" # Format to EURUSD_otc
-
-        direction = None
-        if signal_type == "BUY":
-            direction = OrderDirection.CALL
-        elif signal_type == "SELL":
-            direction = OrderDirection.PUT
-        
-        if direction:
-            await bot.send_message(chat_id=os.getenv("CHAT_ID"), text=f"🚨 Signal detected for {asset}: {signal_type}. Executing trade...")
-            await execute_trade(asset, direction)
-        else:
-            logger.warning(f"Could not determine trade direction from signal: {text}")
-    else:
-        logger.info(f"No trade signal detected in message: {text}")
+@dp.callback_query(lambda c: c.data and c.data.startswith('trade_'))
+async def process_callback_button(callback_query: types.CallbackQuery):
+    global chat_id
+    chat_id = callback_query.message.chat.id # Ensure chat_id is set for callbacks
+    
+    action, asset, direction_value = callback_query.data.split('_')
+    direction = OrderDirection.CALL if direction_value == str(OrderDirection.CALL.value) else OrderDirection.PUT
+    
+    await bot.answer_callback_query(callback_query.id, text=f"Executing trade for {asset} {direction.name}...")
+    await execute_trade(asset, direction)
 
 async def main():
     await po_client.connect()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()))
