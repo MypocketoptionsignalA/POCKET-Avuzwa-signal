@@ -1,5 +1,5 @@
 aiogram==3.1.1
-pandas==2.1.4
-numpy==1.26.2
-pandas-ta==0.3.14b
+pandas==2.0.3
+numpy==1.24.3
+pandas-ta
 pocketoptionapi-async==0.0.1
