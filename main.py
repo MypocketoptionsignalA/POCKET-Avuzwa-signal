@@ -167,8 +167,31 @@ async def asset_button_handler(message: types.Message):
         await message.answer("Please use the asset buttons to get signals.", reply_markup=get_asset_reply_keyboard())
 
 async def main():
-    await po_client.connect() # Connect to Pocket Option for market data
-    await dp.start_polling(bot)
+    logger.info("Starting bot...")
+    if not TELEGRAM_TOKEN:
+        logger.error("TELEGRAM_TOKEN is not set!")
+        return
+    if not POCKET_OPTION_SSID:
+        logger.error("POCKET_OPTION_SSID is not set!")
+        # We'll continue, but signals might fail
+    
+    try:
+        logger.info("Connecting to Pocket Option...")
+        await po_client.connect()
+        logger.info("Connected to Pocket Option successfully.")
+    except Exception as e:
+        logger.error(f"Failed to connect to Pocket Option: {e}")
+
+    logger.info("Starting Telegram polling...")
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.error(f"Error during polling: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user.")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
