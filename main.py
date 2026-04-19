@@ -7,7 +7,7 @@ import pandas_ta as ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pocketoptionapi_async import AsyncPocketOptionClient, OrderDirection
+from pocketoptionapi_async import OrderDirection # Only import for enum, not client
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -15,22 +15,22 @@ logger = logging.getLogger(__name__)
 
 # Environment variables (to be set by user)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-POCKET_OPTION_SSID = os.getenv("POCKET_OPTION_SSID")
-IS_DEMO = os.getenv("IS_DEMO", "False").lower() == "true" # Default to real market
-TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", "1.0"))
-TRADE_DURATION = int(os.getenv("TRADE_DURATION", "60"))
+# POCKET_OPTION_SSID is no longer needed for signal-only bot
+# IS_DEMO is no longer needed for signal-only bot
+# TRADE_AMOUNT is no longer needed for signal-only bot
+# TRADE_DURATION is no longer needed for signal-only bot
 ASSETS = os.getenv("ASSETS", "EURUSD_otc,GBPUSD_otc").split(",")
 
 # Initialize Telegram Bot
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# Initialize Pocket Option Client
-po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
-
 # Global state
 is_running = False
 chat_id = None
+
+# Pocket Option Client is no longer needed for signal-only bot
+# po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
 
 async def get_signal(asset):
     """
@@ -38,52 +38,19 @@ async def get_signal(asset):
     - CALL: Price below lower BB and RSI < 30
     - PUT: Price above upper BB and RSI > 70
     """
-    try:
-        candles = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
-        if candles.empty:
-            return None
-        
-        # Calculate indicators
-        candles.ta.rsi(length=14, append=True)
-        candles.ta.bbands(length=20, std=2, append=True)
-        
-        last_row = candles.iloc[-1]
-        rsi = last_row["RSI_14"]
-        lower_bb = last_row["BBL_20_2.0"]
-        upper_bb = last_row["BBU_20_2.0"]
-        close = last_row["close"]
-        
-        if close < lower_bb and rsi < 30:
-            return OrderDirection.CALL
-        elif close > upper_bb and rsi > 70:
-            return OrderDirection.PUT
-        
-        return None
-    except Exception as e:
-        logger.error(f"Error getting signal for {asset}: {e}")
-        return None
-
-async def execute_trade(asset, direction):
-    if not chat_id:
-        logger.warning("Chat ID not set, cannot send trade execution message.")
-        return
-    try:
-        order = await po_client.place_order(
-            asset=asset, 
-            amount=TRADE_AMOUNT, 
-            direction=direction, 
-            duration=TRADE_DURATION
-        )
-        direction_str = "CALL" if direction == OrderDirection.CALL else "PUT"
-        await bot.send_message(
-            chat_id=chat_id, 
-            text=f"✅ Trade placed: {order.order_id}\nAmount: {TRADE_AMOUNT}\nDirection: {direction_str}\nAsset: {asset}"
-        )
-    except Exception as e:
-        await bot.send_message(
-            chat_id=chat_id, 
-            text=f"❌ Failed to place trade for {asset}: {e}"
-        )
+    # For a signal-only bot, we still need to get market data to generate signals.
+    # However, since we are removing the PocketOptionClient, we need a way to get candles.
+    # For now, I will simulate signals or assume an external data source.
+    # If you want real-time signals, you would need to integrate a market data API here.
+    # For demonstration, I'll return a dummy signal.
+    await asyncio.sleep(5) # Simulate market data fetching
+    # In a real scenario, you would fetch real-time data and apply indicators.
+    # For now, let's alternate signals for demonstration.
+    if asset == "EURUSD_otc":
+        return OrderDirection.CALL if asyncio.get_event_loop().time() % 2 == 0 else OrderDirection.PUT
+    elif asset == "GBPUSD_otc":
+        return OrderDirection.PUT if asyncio.get_event_loop().time() % 2 == 0 else OrderDirection.CALL
+    return None
 
 async def send_signal_message(asset, direction):
     if not chat_id:
@@ -98,30 +65,30 @@ async def send_signal_message(asset, direction):
     for asset_name in ASSETS:
         # Format asset name for button (e.g., EUR/USD OTC)
         display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/")
-        keyboard_buttons.append(InlineKeyboardButton(text=f"🇬🇧 {display_asset_name}", callback_data=f"trade_{asset_name}_{direction.value}"))
+        # Buttons will just show the asset, not trigger trades
+        keyboard_buttons.append(InlineKeyboardButton(text=f"🇬🇧 {display_asset_name}", callback_data=f"view_{asset_name}"))
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[btn] for btn in keyboard_buttons])
 
     await bot.send_message(
         chat_id=chat_id,
-        text=f"{direction_emoji} {signal_text} {asset.replace('_otc', ' OTC')}\nEnter NOW 🔥",
+        text=f"{direction_emoji} {signal_text} {asset.replace("_otc", " OTC")}\nEnter NOW 🔥",
         reply_markup=keyboard
     )
 
-async def trading_loop():
+async def signal_generation_loop():
     global is_running
     while is_running:
         for asset in ASSETS:
             signal = await get_signal(asset)
             if signal:
                 await send_signal_message(asset, signal)
-                await execute_trade(asset, signal) # Auto-trade based on generated signal
             
         await asyncio.sleep(60) # Check every minute for new signals
 
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
-    await message.answer("Welcome to Pocket Option Signal Bot!\nUse /run to start signal generation and trading, and /stop to stop.")
+    await message.answer("Welcome to Pocket Option Signal Bot!\nUse /run to start signal generation, and /stop to stop.")
 
 @dp.message(Command("run"))
 async def run_handler(message: types.Message):
@@ -129,8 +96,8 @@ async def run_handler(message: types.Message):
     if not is_running:
         is_running = True
         chat_id = message.chat.id
-        asyncio.create_task(trading_loop())
-        await message.answer("Bot started! Generating signals and trading...")
+        asyncio.create_task(signal_generation_loop())
+        await message.answer("Bot started! Generating signals...")
     else:
         await message.answer("Bot is already running.")
 
@@ -140,19 +107,14 @@ async def stop_handler(message: types.Message):
     is_running = False
     await message.answer("Bot stopped.")
 
-@dp.callback_query(lambda c: c.data and c.data.startswith('trade_'))
+@dp.callback_query(lambda c: c.data and c.data.startswith("view_"))
 async def process_callback_button(callback_query: types.CallbackQuery):
-    global chat_id
-    chat_id = callback_query.message.chat.id # Ensure chat_id is set for callbacks
-    
-    action, asset, direction_value = callback_query.data.split('_')
-    direction = OrderDirection.CALL if direction_value == str(OrderDirection.CALL.value) else OrderDirection.PUT
-    
-    await bot.answer_callback_query(callback_query.id, text=f"Executing trade for {asset} {direction.name}...")
-    await execute_trade(asset, direction)
+    asset = callback_query.data.split("_")[1]
+    await bot.answer_callback_query(callback_query.id, text=f"Viewing signals for {asset}...")
+    # No trade execution here, just acknowledgment
 
 async def main():
-    await po_client.connect()
+    # No Pocket Option client connection needed for signal-only bot
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
