@@ -49,7 +49,7 @@ async def get_signal(asset):
         
         # Calculate indicators
         candles.ta.rsi(length=14, append=True)
-        candles.ta.bbands(length=20, std=2, append=true)
+        candles.ta.bbands(length=20, std=2, append=True)
         candles.ta.sma(length=10, append=True) # Add SMA for fallback
         
         last_row = candles.iloc[-1]
@@ -151,6 +151,7 @@ async def asset_button_handler(message: types.Message):
     found_asset = None
     for asset_name in ASSETS:
         # Prepare the asset_name for comparison, matching the cleaned button text format
+        # Ensure this matches how the button text is generated, without flags for comparison
         compare_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
         if cleaned_message_text == compare_asset_name:
             found_asset = asset_name
