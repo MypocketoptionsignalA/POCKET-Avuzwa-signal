@@ -6,7 +6,7 @@ import pandas as pd
 import pandas_ta as ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from pocketoptionapi_async import AsyncPocketOptionClient, OrderDirection
 
 # Configure logging
@@ -37,15 +37,15 @@ chat_id = None
 async def get_signal(asset):
     """
     Strategy: RSI + Bollinger Bands with a fallback to SMA trend.
+    This function is guaranteed to return a signal (CALL or PUT).
     - CALL: Price below lower BB and RSI < 30, OR (fallback) Price above SMA_10.
     - PUT: Price above upper BB and RSI > 70, OR (fallback) Price below SMA_10.
     """
     try:
         candles = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
         if candles.empty or len(candles) < 20: # Need enough data for BB and SMA
-            logger.warning(f"Not enough candle data for {asset} to generate a signal.")
-            # Fallback if not enough data for complex indicators
-            return OrderDirection.CALL # Default to CALL if no data
+            logger.warning(f"Not enough candle data for {asset} to generate a signal. Using default CALL.")
+            return OrderDirection.CALL # Default to CALL if not enough data
         
         # Calculate indicators
         candles.ta.rsi(length=14, append=True)
@@ -75,7 +75,7 @@ async def get_signal(asset):
         return OrderDirection.CALL
 
     except Exception as e:
-        logger.error(f"Error getting signal for {asset}: {e}")
+        logger.error(f"Error getting signal for {asset}: {e}. Using default CALL.")
         return OrderDirection.CALL # Default to CALL on error
 
 async def send_signal_message(asset, direction):
@@ -97,7 +97,24 @@ def get_asset_reply_keyboard():
     for asset_name in ASSETS:
         # Format asset name for button (e.g., USD/JPY OTC)
         display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
-        keyboard_buttons.append(KeyboardButton(text=f"🇬🇧 {display_asset_name}"))
+        # Add flag emoji based on the first currency in the pair
+        flag_emoji = ""
+        if "USD" in asset_name:
+            flag_emoji = "🇺🇸"
+        elif "GBP" in asset_name:
+            flag_emoji = "🇬🇧"
+        elif "EUR" in asset_name:
+            flag_emoji = "🇪🇺"
+        elif "AUD" in asset_name:
+            flag_emoji = "🇦🇺"
+        elif "NZD" in asset_name:
+            flag_emoji = "🇳🇿"
+        elif "CAD" in asset_name:
+            flag_emoji = "🇨🇦"
+        elif "JPY" in asset_name:
+            flag_emoji = "🇯🇵"
+        
+        keyboard_buttons.append(KeyboardButton(text=f"{flag_emoji} {display_asset_name}"))
     
     # Arrange buttons in rows of 2 for a square grid look
     rows = [keyboard_buttons[i:i + 2] for i in range(0, len(keyboard_buttons), 2)]
@@ -120,27 +137,32 @@ async def run_handler(message: types.Message):
 
 @dp.message(Command("stop"))
 async def stop_handler(message: types.Message):
-    await message.answer("Bot stopped. To get signals again, use /run or /start.", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("Bot stopped. To get signals again, use /run or /start.", reply_markup=ReplyKeyboardRemove())
 
 @dp.message()
 async def asset_button_handler(message: types.Message):
     global chat_id
     chat_id = message.chat.id
 
-    # Check if the message text matches one of our asset display names
+    # Clean the message text to match asset names (remove flag emojis and extra spaces)
+    cleaned_message_text = re.sub(r'^[\U0001F1E6-\U0001F1FF]+ ', '', message.text).strip() # Remove flag emojis from start
+    cleaned_message_text = cleaned_message_text.replace(' ', '') # Remove spaces for comparison
+
+    found_asset = None
     for asset_name in ASSETS:
-        display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
-        # Remove the flag emoji for comparison if present in message.text
-        message_text_cleaned = re.sub(r'^[🇬🇧🇪🇺🇦🇺🇳🇿🇨🇦🇯🇵]+ ', '', message.text) # Remove flag emojis from start
-        if message_text_cleaned == display_asset_name:
-            await bot.send_message(chat_id=chat_id, text=f"Getting signal for {display_asset_name}...")
-            signal = await get_signal(asset_name)
-            # The get_signal function is now guaranteed to return a signal
-            await send_signal_message(asset_name, signal)
-            return
+        display_asset_name_cleaned = asset_name.replace("_otc", "OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/").replace('/', '')
+        if cleaned_message_text == display_asset_name_cleaned:
+            found_asset = asset_name
+            break
     
-    # If it's not an asset button, just acknowledge or ignore
-    await message.answer("Please use the asset buttons to get signals.", reply_markup=get_asset_reply_keyboard())
+    if found_asset:
+        await bot.send_message(chat_id=chat_id, text=f"Getting signal for {found_asset.replace("_otc", " OTC")}...")
+        signal = await get_signal(found_asset)
+        # The get_signal function is now guaranteed to return a signal
+        await send_signal_message(found_asset, signal)
+    else:
+        # If it's not an asset button, just acknowledge or ignore
+        await message.answer("Please use the asset buttons to get signals.", reply_markup=get_asset_reply_keyboard())
 
 async def main():
     await po_client.connect() # Connect to Pocket Option for market data
