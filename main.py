@@ -6,7 +6,7 @@ import pandas as pd
 import pandas_ta as ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pocketoptionapi_async import AsyncPocketOptionClient, OrderDirection
 
 # Configure logging
@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 
 # Environment variables (to be set by user)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-POCKET_OPTION_SSID = os.getenv("POCKET_OPTION_SSID") # Re-introducing for market data
-IS_DEMO = os.getenv("IS_DEMO", "False").lower() == "true" # Re-introducing for market data
+POCKET_OPTION_SSID = os.getenv("POCKET_OPTION_SSID") # Needed for market data
+IS_DEMO = os.getenv("IS_DEMO", "False").lower() == "true" # Needed for market data
 
 # Expanded ASSETS list
 ASSETS = [
-    "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "GBPJPY_otc", "AUDUSD_otc",
+    "USDJPY_otc", "GBPUSD_otc", "GBPJPY_otc", "EURUSD_otc", "AUDUSD_otc",
     "USDCAD_otc", "EURJPY_otc", "AUDJPY_otc", "NZDUSD_otc", "EURGBP_otc"
 ]
 
@@ -32,7 +32,6 @@ dp = Dispatcher()
 po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
 
 # Global state
-is_running = False
 chat_id = None
 
 async def get_signal(asset):
@@ -74,80 +73,61 @@ async def send_signal_message(asset, direction):
     direction_emoji = "⬆️" if direction == OrderDirection.CALL else "⬇️"
     signal_text = "BUY SIGNAL!" if direction == OrderDirection.CALL else "SELL SIGNAL!"
     
-    # Create inline keyboard for assets (as in previous version, but now for display)
-    keyboard_buttons = []
-    for asset_name in ASSETS:
-        display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
-        keyboard_buttons.append(InlineKeyboardButton(text=f"🇬🇧 {display_asset_name}", callback_data=f"get_signal_{asset_name}"))
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[btn] for btn in keyboard_buttons])
-
     await bot.send_message(
         chat_id=chat_id,
-        text=f"{direction_emoji} {signal_text} {asset.replace("_otc", " OTC")}\nEnter NOW 🔥",
-        reply_markup=keyboard
+        text=f"{direction_emoji} {signal_text} {asset.replace("_otc", " OTC")}\nEnter NOW 🔥"
     )
 
-# Create a persistent ReplyKeyboardMarkup with asset buttons
-def get_asset_keyboard():
+# Create a persistent InlineKeyboardMarkup with asset buttons
+def get_asset_inline_keyboard():
     keyboard_buttons = []
     for asset_name in ASSETS:
+        # Format asset name for button (e.g., USD/JPY OTC)
         display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
-        keyboard_buttons.append(KeyboardButton(text=display_asset_name))
+        # Use callback_data to trigger signal generation for the specific asset
+        keyboard_buttons.append(InlineKeyboardButton(text=f"🇬🇧 {display_asset_name}", callback_data=f"signal_{asset_name}"))
     
-    # Arrange buttons in rows (e.g., 2 buttons per row)
-    rows = [keyboard_buttons[i:i + 2] for i in range(0, len(keyboard_buttons), 2)]
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=False)
+    # Arrange buttons in rows (e.g., 1 button per row for a vertical list)
+    rows = [[btn] for btn in keyboard_buttons]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     global chat_id
     chat_id = message.chat.id
     await message.answer(
-        "Welcome to Pocket Option Signal Bot!\nClick an asset button below to get an instant signal.",
-        reply_markup=get_asset_keyboard()
+        "Welcome to Pocket Option Signal Bot!\nTap an asset below to get an instant signal.",
+        reply_markup=get_asset_inline_keyboard()
     )
 
 @dp.message(Command("run"))
 async def run_handler(message: types.Message):
-    global is_running, chat_id
-    if not is_running:
-        is_running = True
-        chat_id = message.chat.id
-        await message.answer("Bot started! Click an asset button to get a signal.", reply_markup=get_asset_keyboard())
-    else:
-        await message.answer("Bot is already running.")
+    global chat_id
+    chat_id = message.chat.id
+    await message.answer("Bot is ready! Tap an asset below to get a signal.", reply_markup=get_asset_inline_keyboard())
 
 @dp.message(Command("stop"))
 async def stop_handler(message: types.Message):
-    global is_running
-    is_running = False
-    await message.answer("Bot stopped.")
+    await message.answer("Bot stopped. To get signals again, use /run or /start.")
 
-@dp.message()
-async def asset_button_handler(message: types.Message):
+@dp.callback_query(lambda c: c.data and c.data.startswith("signal_"))
+async def process_signal_callback(callback_query: types.CallbackQuery):
     global chat_id
-    chat_id = message.chat.id
-
-    # Check if the message text matches one of our asset display names
-    for asset_name in ASSETS:
-        display_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
-        if message.text == display_asset_name:
-            await message.answer(f"Getting signal for {display_asset_name}...")
-            signal = await get_signal(asset_name)
-            if signal:
-                await send_signal_message(asset_name, signal)
-            else:
-                await message.answer(f"No clear signal for {display_asset_name} at the moment.")
-            return
+    chat_id = callback_query.message.chat.id # Ensure chat_id is set for callbacks
     
-    # If it's not an asset button, just acknowledge or ignore
-    if message.text not in [btn.text for row in get_asset_keyboard().keyboard for btn in row]:
-        await message.answer("Please use the asset buttons to get signals.", reply_markup=get_asset_keyboard())
+    asset = callback_query.data.split("_")[1]
+    
+    await bot.answer_callback_query(callback_query.id, text=f"Getting signal for {asset.replace('_otc', ' OTC')}...")
+    
+    signal = await get_signal(asset)
+    if signal:
+        await send_signal_message(asset, signal)
+    else:
+        await bot.send_message(chat_id=chat_id, text=f"No clear signal for {asset.replace('_otc', ' OTC')} at the moment.")
 
 async def main():
     await po_client.connect() # Connect to Pocket Option for market data
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main()))
+    asyncio.run(main())
