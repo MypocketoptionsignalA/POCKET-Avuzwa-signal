@@ -49,7 +49,7 @@ async def get_signal(asset):
         
         # Calculate indicators
         candles.ta.rsi(length=14, append=True)
-        candles.ta.bbands(length=20, std=2, append=True)
+        candles.ta.bbands(length=20, std=2, append=true)
         candles.ta.sma(length=10, append=True) # Add SMA for fallback
         
         last_row = candles.iloc[-1]
@@ -145,13 +145,14 @@ async def asset_button_handler(message: types.Message):
     chat_id = message.chat.id
 
     # Clean the message text to match asset names (remove flag emojis and extra spaces)
-    cleaned_message_text = re.sub(r'^[\U0001F1E6-\U0001F1FF]+ ', '', message.text).strip() # Remove flag emojis from start
-    cleaned_message_text = cleaned_message_text.replace(' ', '') # Remove spaces for comparison
+    # Regex to remove any sequence of flag emojis at the start, followed by a space
+    cleaned_message_text = re.sub(r'^[\U0001F1E6-\U0001F1FF\s]+', '', message.text).strip()
 
     found_asset = None
     for asset_name in ASSETS:
-        display_asset_name_cleaned = asset_name.replace("_otc", "OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/").replace('/', '')
-        if cleaned_message_text == display_asset_name_cleaned:
+        # Prepare the asset_name for comparison, matching the cleaned button text format
+        compare_asset_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
+        if cleaned_message_text == compare_asset_name:
             found_asset = asset_name
             break
     
