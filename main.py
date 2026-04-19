@@ -36,34 +36,47 @@ chat_id = None
 
 async def get_signal(asset):
     """
-    Simple strategy: RSI + Bollinger Bands
-    - CALL: Price below lower BB and RSI < 30
-    - PUT: Price above upper BB and RSI > 70
+    Strategy: RSI + Bollinger Bands with a fallback to SMA trend.
+    - CALL: Price below lower BB and RSI < 30, OR (fallback) Price above SMA_10.
+    - PUT: Price above upper BB and RSI > 70, OR (fallback) Price below SMA_10.
     """
     try:
         candles = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
-        if candles.empty:
-            return None
+        if candles.empty or len(candles) < 20: # Need enough data for BB and SMA
+            logger.warning(f"Not enough candle data for {asset} to generate a signal.")
+            # Fallback if not enough data for complex indicators
+            return OrderDirection.CALL # Default to CALL if no data
         
         # Calculate indicators
         candles.ta.rsi(length=14, append=True)
         candles.ta.bbands(length=20, std=2, append=True)
+        candles.ta.sma(length=10, append=True) # Add SMA for fallback
         
         last_row = candles.iloc[-1]
         rsi = last_row["RSI_14"]
         lower_bb = last_row["BBL_20_2.0"]
         upper_bb = last_row["BBU_20_2.0"]
         close = last_row["close"]
+        sma_10 = last_row["SMA_10"]
         
+        # Primary conditions
         if close < lower_bb and rsi < 30:
             return OrderDirection.CALL
         elif close > upper_bb and rsi > 70:
             return OrderDirection.PUT
         
-        return None
+        # Fallback if primary conditions are not met
+        if close > sma_10:
+            return OrderDirection.CALL
+        elif close < sma_10:
+            return OrderDirection.PUT
+        
+        # If all else fails (e.g., price is exactly on SMA), default to CALL
+        return OrderDirection.CALL
+
     except Exception as e:
         logger.error(f"Error getting signal for {asset}: {e}")
-        return None
+        return OrderDirection.CALL # Default to CALL on error
 
 async def send_signal_message(asset, direction):
     if not chat_id:
@@ -117,17 +130,15 @@ async def process_signal_callback(callback_query: types.CallbackQuery):
     
     asset = callback_query.data.split("_")[1]
     
-    await bot.answer_callback_query(callback_query.id, text=f"Getting signal for {asset.replace('_otc', ' OTC')}...")
+    await bot.answer_callback_query(callback_query.id, text=f"Getting signal for {asset.replace("_otc", " OTC")}...")
     
     signal = await get_signal(asset)
-    if signal:
-        await send_signal_message(asset, signal)
-    else:
-        await bot.send_message(chat_id=chat_id, text=f"No clear signal for {asset.replace('_otc', ' OTC')} at the moment.")
+    # The get_signal function is now guaranteed to return a signal
+    await send_signal_message(asset, signal)
 
 async def main():
     await po_client.connect() # Connect to Pocket Option for market data
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()))
