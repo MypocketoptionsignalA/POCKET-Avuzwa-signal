@@ -49,63 +49,70 @@ def calculate_stochastic(df, k_period=5, d_period=3):
     d = k.rolling(window=d_period).mean()
     return k, d
 
-async def get_institutional_signal(asset, selected_tf):
+async def get_god_tier_signal(asset, selected_tf):
     """
-    INSTITUTIONAL SNIPER: Confidence Scoring + Volume Divergence + Trend-Lock.
+    GOD-TIER SHIELD: Triple-Trend Confirmation + Price-Action Filter + Liquidity Zones.
     """
     try:
         candles_5s = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
         candles_1m = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
+        candles_5m = await po_client.get_candles_dataframe(asset=asset, timeframe=300)
         
-        if candles_5s.empty or len(candles_5s) < 60 or candles_1m.empty:
-            return None, 0
+        if candles_5s.empty or len(candles_5s) < 60 or candles_1m.empty or candles_5m.empty:
+            return None, 0, "Wait for Data"
         
-        # 1. Institutional Trend (1-minute SMA 100)
-        candles_1m['SMA_100'] = candles_1m['close'].rolling(window=100).mean()
-        trend_up = candles_1m.iloc[-1]['close'] > candles_1m.iloc[-1]['SMA_100']
+        # 1. Triple-Trend Confirmation
+        trend_1m = candles_1m.iloc[-1]['close'] > candles_1m['close'].rolling(window=50).mean().iloc[-1]
+        trend_5m = candles_5m.iloc[-1]['close'] > candles_5m['close'].rolling(window=50).mean().iloc[-1]
         
-        # 2. Indicators
-        candles_5s['RSI'] = calculate_rsi(candles_5s['close'], 7)
-        candles_5s['K'], candles_5s['D'] = calculate_stochastic(candles_5s, 5, 3)
+        # 2. Price-Action Shield (Filter out Dojis/Small Candles)
+        last_candle = candles_5s.iloc[-1]
+        body_size = abs(last_candle['close'] - last_candle['open'])
+        avg_body = abs(candles_5s['close'] - candles_5s['open']).tail(20).mean()
+        if body_size < (avg_body * 0.3): # Market is too flat
+            return None, 0, "Market Flat (No Trade)"
         
-        # 3. Volume Divergence (Simplified for 5s)
-        # If price goes up but RSI goes down = Bearish Divergence
-        # If price goes down but RSI goes up = Bullish Divergence
-        price_change = candles_5s['close'].diff(5).iloc[-1]
-        rsi_change = candles_5s['RSI'].diff(5).iloc[-1]
+        # 3. Indicators
+        rsi = calculate_rsi(candles_5s['close'], 7).iloc[-1]
+        k, d = calculate_stochastic(candles_5s, 5, 3)
+        k_val, d_val = k.iloc[-1], d.iloc[-1]
         
-        last = candles_5s.iloc[-1]
-        close, rsi, k, d = last["close"], last["RSI"], last["K"], last["D"]
+        # 4. Liquidity Zones (Support/Resistance)
+        support = candles_5s['low'].tail(60).min()
+        resistance = candles_5s['high'].tail(60).max()
         
         confidence = 0
         direction = None
+        status = "Scanning..."
 
-        # --- INSTITUTIONAL LOGIC ---
+        # --- GOD-TIER LOGIC ---
         
-        # BULLISH SETUP
-        if trend_up and rsi <= 25 and k > d:
-            confidence = 75
-            if rsi_change > 0 and price_change < 0: # Bullish Divergence
-                confidence += 15
+        # BULLISH SETUP (BUY)
+        if trend_1m and trend_5m and last_candle['close'] <= (support * 1.0001) and rsi <= 20 and k_val > d_val:
             direction = OrderDirection.CALL
+            confidence = 92
+            status = "GOD-TIER BUY SETUP"
             
-        # BEARISH SETUP
-        elif not trend_up and rsi >= 75 and k < d:
-            confidence = 75
-            if rsi_change < 0 and price_change > 0: # Bearish Divergence
-                confidence += 15
+        # BEARISH SETUP (SELL)
+        elif not trend_1m and not trend_5m and last_candle['close'] >= (resistance * 0.9999) and rsi >= 80 and k_val < d_val:
             direction = OrderDirection.PUT
+            confidence = 92
+            status = "GOD-TIER SELL SETUP"
             
-        # If no clear setup, follow trend with lower confidence
+        # If no perfect setup, follow the strongest trend
         if direction is None:
-            direction = OrderDirection.CALL if trend_up else OrderDirection.PUT
-            confidence = 60
+            if trend_1m == trend_5m:
+                direction = OrderDirection.CALL if trend_1m else OrderDirection.PUT
+                confidence = 70
+                status = "Trend Following"
+            else:
+                return None, 0, "Trend Conflict (No Trade)"
 
-        return direction, confidence
+        return direction, confidence, status
 
     except Exception as e:
         logger.error(f"Error: {e}")
-        return OrderDirection.CALL, 50
+        return None, 0, "Error"
 
 def get_asset_keyboard():
     btns = []
@@ -127,7 +134,7 @@ def get_timeframe_keyboard():
 @dp.message(Command("start"))
 async def start(m: types.Message, state: FSMContext):
     await state.set_state(TradingStates.selecting_asset)
-    await m.answer("🏛 INSTITUTIONAL SNIPER ACTIVE\nProfessional Grade Analysis Enabled.", reply_markup=get_asset_keyboard())
+    await m.answer("🛡 GOD-TIER SHIELD ACTIVE\nTriple-Trend & Price-Action Filter Enabled.", reply_markup=get_asset_keyboard())
 
 @dp.message(TradingStates.selecting_asset)
 async def asset_chosen(m: types.Message, state: FSMContext):
@@ -155,12 +162,17 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
         data = await state.get_data()
         asset = data['asset']
         tf_text = m.text.replace("⏱ ", "")
-        await m.answer(f"🔍 Scanning Market for {asset.replace('_otc', ' OTC')}...")
+        await m.answer(f"🛡 God-Tier Shield Scanning {asset.replace('_otc', ' OTC')}...")
         
-        direction, confidence = await get_institutional_signal(asset, tf_text)
+        direction, confidence, status = await get_god_tier_signal(asset, tf_text)
         
-        emoji = "🏛 INSTITUTIONAL BUY" if direction == OrderDirection.CALL else "🏛 INSTITUTIONAL SELL"
-        strength = "🟢 HIGH" if confidence >= 85 else "🟡 MEDIUM" if confidence >= 70 else "🔴 LOW"
+        if direction is None:
+            await m.answer(f"⚠️ NO TRADE: {status}\nMarket is currently too risky. Try another asset!", reply_markup=get_asset_keyboard())
+            await state.set_state(TradingStates.selecting_asset)
+            return
+
+        emoji = "🛡 GOD-TIER BUY" if direction == OrderDirection.CALL else "🛡 GOD-TIER SELL"
+        strength = "💎 DIAMOND" if confidence >= 90 else "🟢 HIGH" if confidence >= 80 else "🟡 MEDIUM"
         
         text = (
             f"━━━━━━━━━━━━━━━\n"
@@ -170,6 +182,7 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
             f"⏱ Time: {tf_text}\n"
             f"📊 Confidence: {confidence}%\n"
             f"⚡ Strength: {strength}\n"
+            f"🛡 Status: {status}\n"
             f"━━━━━━━━━━━━━━━\n"
             f"🔥 ENTER NOW!"
         )
