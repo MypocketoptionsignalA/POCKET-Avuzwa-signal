@@ -178,11 +178,11 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
             await state.set_state(TradingStates.selecting_asset)
             return
 
-        # New simplified signal message format
+        # New simplified signal message format with timeframe
         if direction == OrderDirection.CALL:
-            signal_text = "⬆️ BUY SIGNAL! 🚀\nEnter NOW 🔥"
+            signal_text = f"⬆️ BUY SIGNAL! 🚀\n⏱ Time: {tf_text}\nEnter NOW 🔥"
         else:
-            signal_text = "⬇️ SELL SIGNAL! 🚨\nEnter NOW 🔥"
+            signal_text = f"⬇️ SELL SIGNAL! 🚨\n⏱ Time: {tf_text}\nEnter NOW 🔥"
         
         await m.answer(signal_text, reply_markup=get_asset_keyboard())
         await state.set_state(TradingStates.selecting_asset)
