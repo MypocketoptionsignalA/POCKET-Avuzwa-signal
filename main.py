@@ -34,37 +34,78 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
 
-async def get_turbo_signal(asset):
+def calculate_rsi(series, period=7):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    loss = loss.replace(0, 0.00001)
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+async def get_millionaire_signal(asset):
     """
-    TURBO SCALPER: Pure Momentum & Price Action.
-    Gives a signal every time based on immediate 5s candle direction.
+    MILLIONAIRE'S SNIPER: Advanced Trend-Following + Volatility Protection.
+    Focuses on high-probability entries only.
     """
     try:
-        # Fetch 5-second candles
-        candles = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
+        # Fetch 5-second and 1-minute candles for multi-timeframe analysis
+        candles_5s = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
+        candles_1m = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
         
-        if candles.empty or len(candles) < 5:
-            # Fallback if data is slow
-            return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
+        if candles_5s.empty or len(candles_5s) < 50 or candles_1m.empty:
+            return None, 0, "Wait for Data"
         
-        last_candles = candles.tail(3)
+        # 1. Major Trend (1-minute SMA 50)
+        sma_50_1m = candles_1m['close'].rolling(window=50).mean().iloc[-1]
+        current_price_1m = candles_1m.iloc[-1]['close']
+        major_trend_up = current_price_1m > sma_50_1m
         
-        # Calculate immediate momentum
-        # If the last 2 candles are green, we BUY. If red, we SELL.
-        current_close = last_candles.iloc[-1]['close']
-        prev_close = last_candles.iloc[-2]['close']
-        start_close = last_candles.iloc[-3]['close']
+        # 2. Volatility Check (ATR-like)
+        recent_volatility = (candles_5s['high'] - candles_5s['low']).tail(10).mean()
+        avg_volatility = (candles_5s['high'] - candles_5s['low']).tail(50).mean()
         
-        if current_close > prev_close:
-            # Price is moving UP
-            return OrderDirection.CALL
-        else:
-            # Price is moving DOWN
-            return OrderDirection.PUT
+        if recent_volatility > (avg_volatility * 2.5):
+            return None, 0, "High Volatility (Danger)"
+            
+        # 3. Momentum & RSI
+        rsi = calculate_rsi(candles_5s['close'], 7).iloc[-1]
+        
+        # 4. Signal Logic: Only trade WITH the major trend
+        direction = None
+        confidence = 0
+        status = "Scanning..."
+
+        # BULLISH SETUP: Major Trend is UP + 5s RSI is low (Dip in a trend)
+        if major_trend_up and rsi < 35:
+            direction = OrderDirection.CALL
+            confidence = 88
+            status = "Trend Dip (BUY)"
+            
+        # BEARISH SETUP: Major Trend is DOWN + 5s RSI is high (Peak in a trend)
+        elif not major_trend_up and rsi > 65:
+            direction = OrderDirection.PUT
+            confidence = 88
+            status = "Trend Peak (SELL)"
+            
+        # If no perfect setup, check for strong immediate momentum
+        if direction is None:
+            last_3 = candles_5s['close'].tail(3).diff().sum()
+            if major_trend_up and last_3 > 0:
+                direction = OrderDirection.CALL
+                confidence = 75
+                status = "Trend Following"
+            elif not major_trend_up and last_3 < 0:
+                direction = OrderDirection.PUT
+                confidence = 75
+                status = "Trend Following"
+            else:
+                return None, 0, "No Clear Setup"
+
+        return direction, confidence, status
 
     except Exception as e:
         logger.error(f"Error: {e}")
-        return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
+        return None, 0, "Error"
 
 def get_asset_keyboard():
     btns = []
@@ -86,7 +127,7 @@ def get_timeframe_keyboard():
 @dp.message(Command("start"))
 async def start(m: types.Message, state: FSMContext):
     await state.set_state(TradingStates.selecting_asset)
-    await m.answer("⚡ TURBO SCALPER ACTIVE\nHigh-Frequency Momentum Signals Enabled.", reply_markup=get_asset_keyboard())
+    await m.answer("💎 MILLIONAIRE'S SNIPER ACTIVE\nGoal: Safe Growth & High Accuracy.", reply_markup=get_asset_keyboard())
 
 @dp.message(TradingStates.selecting_asset)
 async def asset_chosen(m: types.Message, state: FSMContext):
@@ -100,7 +141,7 @@ async def asset_chosen(m: types.Message, state: FSMContext):
     if found:
         await state.update_data(asset=found)
         await state.set_state(TradingStates.selecting_timeframe)
-        await m.answer(f"🚀 TURBO: {found.replace('_otc', ' OTC')}\nSelect Timeframe:", reply_markup=get_timeframe_keyboard())
+        await m.answer(f"📊 ASSET: {found.replace('_otc', ' OTC')}\nSelect Expiration:", reply_markup=get_timeframe_keyboard())
     else:
         await m.answer("Please use the buttons.")
 
@@ -114,11 +155,17 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
         data = await state.get_data()
         asset = data['asset']
         tf_text = m.text.replace("⏱ ", "")
+        await m.answer(f"💎 Sniper Analyzing {asset.replace('_otc', ' OTC')}...")
         
-        # Instant Analysis
-        direction = await get_turbo_signal(asset)
+        direction, confidence, status = await get_millionaire_signal(asset)
         
-        emoji = "🚀 TURBO BUY" if direction == OrderDirection.CALL else "⚡ TURBO SELL"
+        if direction is None:
+            await m.answer(f"⚠️ NO TRADE: {status}\nMarket is not perfect. Safety first!", reply_markup=get_asset_keyboard())
+            await state.set_state(TradingStates.selecting_asset)
+            return
+
+        emoji = "💎 SNIPER BUY" if direction == OrderDirection.CALL else "💎 SNIPER SELL"
+        strength = "🔥 MAXIMUM" if confidence >= 85 else "🟢 HIGH"
         
         text = (
             f"━━━━━━━━━━━━━━━\n"
@@ -126,6 +173,11 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
             f"━━━━━━━━━━━━━━━\n"
             f"📈 Asset: {asset.replace('_otc', ' OTC')}\n"
             f"⏱ Time: {tf_text}\n"
+            f"📊 Confidence: {confidence}%\n"
+            f"⚡ Strength: {strength}\n"
+            f"🛡 Strategy: {status}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"💰 SUGGESTED: 1-3% of Balance\n"
             f"🔥 ENTER NOW!"
         )
         
