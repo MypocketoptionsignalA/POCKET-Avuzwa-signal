@@ -49,68 +49,63 @@ def calculate_stochastic(df, k_period=5, d_period=3):
     d = k.rolling(window=d_period).mean()
     return k, d
 
-def calculate_atr(df, period=14):
-    high_low = df['high'] - df['low']
-    high_cp = np.abs(df['high'] - df['close'].shift())
-    low_cp = np.abs(df['low'] - df['close'].shift())
-    df_tr = pd.concat([high_low, high_cp, low_cp], axis=1)
-    true_range = df_tr.max(axis=1)
-    return true_range.rolling(window=period).mean()
-
-async def get_signal(asset, selected_tf):
+async def get_institutional_signal(asset, selected_tf):
     """
-    ULTIMATE STRONG STRATEGY: Trend-Lock + ATR Volatility Filter + Candle Patterns.
+    INSTITUTIONAL SNIPER: Confidence Scoring + Volume Divergence + Trend-Lock.
     """
     try:
         candles_5s = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
         candles_1m = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
         
-        if candles_5s.empty or len(candles_5s) < 50 or candles_1m.empty:
-            return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
+        if candles_5s.empty or len(candles_5s) < 60 or candles_1m.empty:
+            return None, 0
         
-        # 1. Trend-Lock (1-minute)
-        candles_1m['SMA_50'] = candles_1m['close'].rolling(window=50).mean()
-        last_1m = candles_1m.iloc[-1]
-        trend_up = last_1m['close'] > last_1m['SMA_50']
+        # 1. Institutional Trend (1-minute SMA 100)
+        candles_1m['SMA_100'] = candles_1m['close'].rolling(window=100).mean()
+        trend_up = candles_1m.iloc[-1]['close'] > candles_1m.iloc[-1]['SMA_100']
         
-        # 2. Volatility Filter (ATR)
-        candles_5s['ATR'] = calculate_atr(candles_5s, 14)
-        avg_atr = candles_5s['ATR'].mean()
-        current_atr = candles_5s.iloc[-1]['ATR']
-        is_volatile = current_atr > (avg_atr * 1.5) # Filter out high-risk spikes
-        
-        # 3. Indicators (5-second)
+        # 2. Indicators
         candles_5s['RSI'] = calculate_rsi(candles_5s['close'], 7)
         candles_5s['K'], candles_5s['D'] = calculate_stochastic(candles_5s, 5, 3)
         
-        # 4. Support/Resistance
-        support = candles_5s['low'].tail(50).min()
-        resistance = candles_5s['high'].tail(50).max()
+        # 3. Volume Divergence (Simplified for 5s)
+        # If price goes up but RSI goes down = Bearish Divergence
+        # If price goes down but RSI goes up = Bullish Divergence
+        price_change = candles_5s['close'].diff(5).iloc[-1]
+        rsi_change = candles_5s['RSI'].diff(5).iloc[-1]
         
         last = candles_5s.iloc[-1]
-        prev = candles_5s.iloc[-2]
         close, rsi, k, d = last["close"], last["RSI"], last["K"], last["D"]
         
-        # 5. Candle Pattern (Rejection)
-        is_bullish_rejection = (last['close'] > last['open']) and (last['low'] < prev['low'])
-        is_bearish_rejection = (last['close'] < last['open']) and (last['high'] > prev['high'])
+        confidence = 0
+        direction = None
 
-        # --- ULTIMATE STRONG LOGIC ---
+        # --- INSTITUTIONAL LOGIC ---
         
-        # STRONG BUY: Trend Up + Support + RSI Oversold + Stoch Cross + Rejection + Not too volatile
-        if trend_up and close <= (support * 1.0002) and rsi <= 20 and k > d and is_bullish_rejection and not is_volatile:
-            return OrderDirection.CALL
+        # BULLISH SETUP
+        if trend_up and rsi <= 25 and k > d:
+            confidence = 75
+            if rsi_change > 0 and price_change < 0: # Bullish Divergence
+                confidence += 15
+            direction = OrderDirection.CALL
             
-        # STRONG SELL: Trend Down + Resistance + RSI Overbought + Stoch Cross + Rejection + Not too volatile
-        if not trend_up and close >= (resistance * 0.9998) and rsi >= 80 and k < d and is_bearish_rejection and not is_volatile:
-            return OrderDirection.PUT
+        # BEARISH SETUP
+        elif not trend_up and rsi >= 75 and k < d:
+            confidence = 75
+            if rsi_change < 0 and price_change > 0: # Bearish Divergence
+                confidence += 15
+            direction = OrderDirection.PUT
             
-        # Default to Trend Following if no reversal is perfect
-        return OrderDirection.CALL if trend_up else OrderDirection.PUT
+        # If no clear setup, follow trend with lower confidence
+        if direction is None:
+            direction = OrderDirection.CALL if trend_up else OrderDirection.PUT
+            confidence = 60
+
+        return direction, confidence
 
     except Exception as e:
         logger.error(f"Error: {e}")
-        return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
+        return OrderDirection.CALL, 50
 
 def get_asset_keyboard():
     btns = []
@@ -132,7 +127,7 @@ def get_timeframe_keyboard():
 @dp.message(Command("start"))
 async def start(m: types.Message, state: FSMContext):
     await state.set_state(TradingStates.selecting_asset)
-    await m.answer("🛡 ULTIMATE STRONG MODE ACTIVE!\nTrend-Lock & Volatility Filter enabled.", reply_markup=get_asset_keyboard())
+    await m.answer("🏛 INSTITUTIONAL SNIPER ACTIVE\nProfessional Grade Analysis Enabled.", reply_markup=get_asset_keyboard())
 
 @dp.message(TradingStates.selecting_asset)
 async def asset_chosen(m: types.Message, state: FSMContext):
@@ -146,7 +141,7 @@ async def asset_chosen(m: types.Message, state: FSMContext):
     if found:
         await state.update_data(asset=found)
         await state.set_state(TradingStates.selecting_timeframe)
-        await m.answer(f"✅ Asset: {found.replace('_otc', ' OTC')}\nSelect Trade Timeframe:", reply_markup=get_timeframe_keyboard())
+        await m.answer(f"📊 ASSET: {found.replace('_otc', ' OTC')}\nSelect Expiration:", reply_markup=get_timeframe_keyboard())
     else:
         await m.answer("Please use the buttons.")
 
@@ -160,10 +155,25 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
         data = await state.get_data()
         asset = data['asset']
         tf_text = m.text.replace("⏱ ", "")
-        await m.answer(f"🛡 Ultimate analysis for {asset.replace('_otc', ' OTC')}...")
-        sig = await get_signal(asset, tf_text)
-        emoji = "🛡 ULTIMATE BUY" if sig == OrderDirection.CALL else "🛡 ULTIMATE SELL"
-        text = f"{emoji}! {asset.replace('_otc', ' OTC')}\n\n🛡 Strategy: Trend-Lock\n⏱ Timeframe: {tf_text}\n🔥 Enter NOW!"
+        await m.answer(f"🔍 Scanning Market for {asset.replace('_otc', ' OTC')}...")
+        
+        direction, confidence = await get_institutional_signal(asset, tf_text)
+        
+        emoji = "🏛 INSTITUTIONAL BUY" if direction == OrderDirection.CALL else "🏛 INSTITUTIONAL SELL"
+        strength = "🟢 HIGH" if confidence >= 85 else "🟡 MEDIUM" if confidence >= 70 else "🔴 LOW"
+        
+        text = (
+            f"━━━━━━━━━━━━━━━\n"
+            f"{emoji}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"📈 Asset: {asset.replace('_otc', ' OTC')}\n"
+            f"⏱ Time: {tf_text}\n"
+            f"📊 Confidence: {confidence}%\n"
+            f"⚡ Strength: {strength}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"🔥 ENTER NOW!"
+        )
+        
         await m.answer(text, reply_markup=get_asset_keyboard())
         await state.set_state(TradingStates.selecting_asset)
     else:
