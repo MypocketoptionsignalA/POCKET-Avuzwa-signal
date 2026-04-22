@@ -4,9 +4,11 @@ import logging
 import re
 import pandas as pd
 import numpy as np
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from pocketoptionapi_async import AsyncPocketOptionClient, OrderDirection
 
 # Configure logging
@@ -24,12 +26,15 @@ ASSETS = [
     "USDCAD_otc", "EURJPY_otc", "AUDJPY_otc", "NZDUSD_otc", "EURGBP_otc"
 ]
 
+# States for FSM
+class TradingStates(StatesGroup):
+    selecting_asset = State()
+    selecting_timeframe = State()
+
 # Initialize Bot
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
-
-chat_id = None
 
 def calculate_rsi(series, period=7):
     delta = series.diff()
@@ -46,29 +51,27 @@ def calculate_stochastic(df, k_period=5, d_period=3):
     d = k.rolling(window=d_period).mean()
     return k, d
 
-async def get_signal(asset):
+async def get_signal(asset, selected_tf):
     """
-    SNIPER STRATEGY: Multi-Timeframe Analysis + Support/Resistance.
-    Designed for maximum accuracy on 5s-30s trades.
+    SNIPER STRATEGY: Optimized for user-selected timeframe.
     """
     try:
-        # 1. Get 5-second data (Fast)
+        # Use 5s candles for all fast trades, but adjust logic sensitivity
         candles_5s = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
-        # 2. Get 1-minute data (Trend Confirmation)
         candles_1m = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
         
         if candles_5s.empty or len(candles_5s) < 30 or candles_1m.empty:
             return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
         
-        # --- 1-MINUTE TREND CHECK ---
+        # Trend Check
         candles_1m['SMA_20'] = candles_1m['close'].rolling(window=20).mean()
         trend_up = candles_1m.iloc[-1]['close'] > candles_1m.iloc[-1]['SMA_20']
         
-        # --- 5-SECOND SNIPER ANALYSIS ---
+        # Indicators
         candles_5s['RSI'] = calculate_rsi(candles_5s['close'], 7)
         candles_5s['K'], candles_5s['D'] = calculate_stochastic(candles_5s, 5, 3)
         
-        # Support & Resistance (Last 30 candles)
+        # Support/Resistance
         support = candles_5s['low'].tail(30).min()
         resistance = candles_5s['high'].tail(30).max()
         
@@ -77,33 +80,23 @@ async def get_signal(asset):
         rsi = last["RSI"]
         k, d = last["K"], last["D"]
         
-        # --- SNIPER LOGIC ---
+        # Adjust thresholds based on timeframe
+        # Faster timeframes (5s, 10s) need more extreme oversold/overbought
+        rsi_low = 15 if "5s" in selected_tf or "10s" in selected_tf else 25
+        rsi_high = 85 if "5s" in selected_tf or "10s" in selected_tf else 75
         
-        # SNIPER BUY: At Support + RSI Oversold + Stoch Cross + Trend is UP
-        if close <= (support * 1.0001) and rsi <= 20 and k <= 20 and k > d and trend_up:
+        if close <= (support * 1.0001) and rsi <= rsi_low and k <= 20 and k > d and trend_up:
             return OrderDirection.CALL
-            
-        # SNIPER SELL: At Resistance + RSI Overbought + Stoch Cross + Trend is DOWN
-        if close >= (resistance * 0.9999) and rsi >= 80 and k >= 80 and k < d and not trend_up:
+        if close >= (resistance * 0.9999) and rsi >= rsi_high and k >= 80 and k < d and not trend_up:
             return OrderDirection.PUT
             
-        # If no sniper entry, follow the immediate 5s momentum ONLY if it matches 1m trend
-        if trend_up:
-            return OrderDirection.CALL
-        else:
-            return OrderDirection.PUT
+        return OrderDirection.CALL if trend_up else OrderDirection.PUT
 
     except Exception as e:
         logger.error(f"Error: {e}")
         return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
 
-async def send_signal_message(asset, direction):
-    if not chat_id: return
-    emoji = "🎯 SNIPER BUY" if direction == OrderDirection.CALL else "🎯 SNIPER SELL"
-    text = f"{emoji}! {asset.replace('_otc', ' OTC')}\n\n🛡 Strategy: Sniper (No-Rush)\n⏱ Timeframe: 5s - 30s\n🔥 Enter NOW!"
-    await bot.send_message(chat_id=chat_id, text=text)
-
-def get_keyboard():
+def get_asset_keyboard():
     btns = []
     for a in ASSETS:
         name = a.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
@@ -112,16 +105,21 @@ def get_keyboard():
     rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
-@dp.message(Command("start"))
-async def start(m: types.Message):
-    global chat_id
-    chat_id = m.chat.id
-    await m.answer("🎯 SNIPER MODE ACTIVE!\nThis bot now checks multiple timeframes for maximum accuracy.", reply_markup=get_keyboard())
+def get_timeframe_keyboard():
+    btns = [
+        [KeyboardButton(text="⏱ 5 Seconds"), KeyboardButton(text="⏱ 10 Seconds")],
+        [KeyboardButton(text="⏱ 15 Seconds"), KeyboardButton(text="⏱ 30 Seconds")],
+        [KeyboardButton(text="🔙 Back to Assets")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
 
-@dp.message()
-async def handle(m: types.Message):
-    global chat_id
-    chat_id = m.chat.id
+@dp.message(Command("start"))
+async def start(m: types.Message, state: FSMContext):
+    await state.set_state(TradingStates.selecting_asset)
+    await m.answer("🎯 SNIPER BOT READY!\nStep 1: Select an Asset below:", reply_markup=get_asset_keyboard())
+
+@dp.message(TradingStates.selecting_asset)
+async def asset_chosen(m: types.Message, state: FSMContext):
     clean = re.sub(r'^[\U0001F1E6-\U0001F1FF\s]+', '', m.text).strip()
     found = None
     for a in ASSETS:
@@ -129,12 +127,36 @@ async def handle(m: types.Message):
         if clean == comp:
             found = a
             break
+    
     if found:
-        await bot.send_message(chat_id=chat_id, text=f"🎯 Sniper analyzing {found.replace('_otc', ' OTC')}...")
-        sig = await get_signal(found)
-        await send_signal_message(found, sig)
+        await state.update_data(asset=found)
+        await state.set_state(TradingStates.selecting_timeframe)
+        await m.answer(f"✅ Asset: {found.replace('_otc', ' OTC')}\nStep 2: Select your Trade Timeframe:", reply_markup=get_timeframe_keyboard())
     else:
-        await m.answer("Use buttons.", reply_markup=get_keyboard())
+        await m.answer("Please use the buttons to select an asset.")
+
+@dp.message(TradingStates.selecting_timeframe)
+async def timeframe_chosen(m: types.Message, state: FSMContext):
+    if m.text == "🔙 Back to Assets":
+        await state.set_state(TradingStates.selecting_asset)
+        await m.answer("Select an Asset:", reply_markup=get_asset_keyboard())
+        return
+
+    if m.text in ["⏱ 5 Seconds", "⏱ 10 Seconds", "⏱ 15 Seconds", "⏱ 30 Seconds"]:
+        data = await state.get_data()
+        asset = data['asset']
+        tf_text = m.text.replace("⏱ ", "")
+        
+        await m.answer(f"🎯 Sniper analyzing {asset.replace('_otc', ' OTC')} for {tf_text} trade...")
+        sig = await get_signal(asset, tf_text)
+        
+        emoji = "🎯 SNIPER BUY" if sig == OrderDirection.CALL else "🎯 SNIPER SELL"
+        text = f"{emoji}! {asset.replace('_otc', ' OTC')}\n\n⏱ Timeframe: {tf_text}\n🔥 Enter NOW!"
+        
+        await m.answer(text, reply_markup=get_asset_keyboard())
+        await state.set_state(TradingStates.selecting_asset)
+    else:
+        await m.answer("Please select a valid timeframe.")
 
 async def main():
     try: await po_client.connect()
