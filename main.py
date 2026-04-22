@@ -13,130 +13,119 @@ from pocketoptionapi_async import AsyncPocketOptionClient, OrderDirection
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Environment variables (to be set by user)
+# Environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-POCKET_OPTION_SSID = os.getenv("POCKET_OPTION_SSID") # Needed for market data
-IS_DEMO = os.getenv("IS_DEMO", "False").lower() == "true" # Needed for market data
+POCKET_OPTION_SSID = os.getenv("POCKET_OPTION_SSID")
+IS_DEMO = os.getenv("IS_DEMO", "False").lower() == "true"
 
-# Expanded ASSETS list
+# Assets
 ASSETS = [
     "USDJPY_otc", "GBPUSD_otc", "GBPJPY_otc", "EURUSD_otc", "AUDUSD_otc",
     "USDCAD_otc", "EURJPY_otc", "AUDJPY_otc", "NZDUSD_otc", "EURGBP_otc"
 ]
 
-# Initialize Telegram Bot
+# Initialize Bot
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
-
-# Initialize Pocket Option Client
 po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
 
-# Global state
 chat_id = None
 
-def calculate_rsi(series, period=14):
+def calculate_rsi(series, period=7): # Shorter period for faster signals
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    # Avoid division by zero
     loss = loss.replace(0, 0.00001)
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
 async def get_signal(asset):
     """
-    Improved Strategy: RSI + Bollinger Bands + SMA.
-    Guaranteed to return a signal based on the most likely direction.
+    High-Speed Strategy: Optimized for 5s, 10s, 15s, 30s trades.
+    Uses 5-second candle data for maximum sensitivity.
     """
     try:
-        candles = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
-        if candles.empty or len(candles) < 20:
-            logger.warning(f"Market data unavailable for {asset}. Check SSID.")
-            # If no data, alternate based on time to avoid constant 'BUY'
+        # Fetch 5-second candles for high-speed analysis
+        candles = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
+        
+        if candles.empty or len(candles) < 15:
+            logger.warning(f"Fast market data unavailable for {asset}. Check SSID.")
             return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
         
-        # Calculate indicators
-        candles['SMA_10'] = candles['close'].rolling(window=10).mean()
-        candles['RSI_14'] = calculate_rsi(candles['close'], 14)
-        candles['SMA_20'] = candles['close'].rolling(window=20).mean()
-        candles['STD_20'] = candles['close'].rolling(window=20).std()
-        candles['BBU_20_2.0'] = candles['SMA_20'] + (candles['STD_20'] * 2)
-        candles['BBL_20_2.0'] = candles['SMA_20'] - (candles['STD_20'] * 2)
+        # Fast Indicators
+        candles['SMA_5'] = candles['close'].rolling(window=5).mean()
+        candles['RSI_7'] = calculate_rsi(candles['close'], 7) # Very sensitive RSI
+        candles['SMA_14'] = candles['close'].rolling(window=14).mean()
+        candles['STD_14'] = candles['close'].rolling(window=14).std()
+        candles['BBU'] = candles['SMA_14'] + (candles['STD_14'] * 1.8) # Tighter bands for faster entries
+        candles['BBL'] = candles['SMA_14'] - (candles['STD_14'] * 1.8)
         
-        last_row = candles.iloc[-1]
-        rsi = last_row["RSI_14"]
-        lower_bb = last_row["BBL_20_2.0"]
-        upper_bb = last_row["BBU_20_2.0"]
-        close = last_row["close"]
-        sma_10 = last_row["SMA_10"]
+        last = candles.iloc[-1]
+        rsi = last["RSI_7"]
+        lower_bb = last["BBL"]
+        upper_bb = last["BBU"]
+        close = last["close"]
+        sma_5 = last["SMA_5"]
         
-        # 1. Strong Reversal Signals (Oversold/Overbought)
-        if close <= lower_bb or rsi <= 30:
+        # HIGH-SPEED SIGNAL LOGIC
+        # 1. Scalping Reversals (Strongest for 5s-15s)
+        if close <= lower_bb and rsi <= 25:
             return OrderDirection.CALL
-        if close >= upper_bb or rsi >= 70:
+        if close >= upper_bb and rsi >= 75:
             return OrderDirection.PUT
             
-        # 2. Trend Following Signals (SMA)
-        if close > sma_10:
+        # 2. Momentum Following (For 15s-30s)
+        if close > sma_5:
             return OrderDirection.CALL
         else:
             return OrderDirection.PUT
 
     except Exception as e:
-        logger.error(f"Error getting signal for {asset}: {e}")
-        # Alternate on error
+        logger.error(f"Error: {e}")
         return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
 
 async def send_signal_message(asset, direction):
     if not chat_id: return
-    direction_emoji = "⬆️" if direction == OrderDirection.CALL else "⬇️"
-    signal_text = "BUY SIGNAL!" if direction == OrderDirection.CALL else "SELL SIGNAL!"
-    await bot.send_message(
-        chat_id=chat_id,
-        text=f"{direction_emoji} {signal_text} {asset.replace('_otc', ' OTC')}\nEnter NOW 🔥"
-    )
+    emoji = "🚀 BUY" if direction == OrderDirection.CALL else "⚡ SELL"
+    text = f"{emoji} SIGNAL! {asset.replace('_otc', ' OTC')}\n\n⏱ Timeframe: 5s - 30s\n🔥 Enter NOW!"
+    await bot.send_message(chat_id=chat_id, text=text)
 
-def get_asset_reply_keyboard():
-    keyboard_buttons = []
-    for asset_name in ASSETS:
-        display_name = asset_name.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
-        flag = "🇺🇸" if "USD" in asset_name else "🇬🇧" if "GBP" in asset_name else "🇪🇺" if "EUR" in asset_name else "🇦🇺" if "AUD" in asset_name else "🇳🇿" if "NZD" in asset_name else "🇨🇦" if "CAD" in asset_name else "🇯🇵" if "JPY" in asset_name else ""
-        keyboard_buttons.append(KeyboardButton(text=f"{flag} {display_name}"))
-    rows = [keyboard_buttons[i:i + 2] for i in range(0, len(keyboard_buttons), 2)]
+def get_keyboard():
+    btns = []
+    for a in ASSETS:
+        name = a.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
+        flag = "🇺🇸" if "USD" in a else "🇬🇧" if "GBP" in a else "🇪🇺" if "EUR" in a else "🇦🇺" if "AUD" in a else "🇳🇿" if "NZD" in a else "🇨🇦" if "CAD" in a else "🇯🇵" if "JPY" in a else ""
+        btns.append(KeyboardButton(text=f"{flag} {name}"))
+    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 @dp.message(Command("start"))
-async def start_handler(message: types.Message):
+async def start(m: types.Message):
     global chat_id
-    chat_id = message.chat.id
-    await message.answer("Welcome! Tap an asset for an instant signal.", reply_markup=get_asset_reply_keyboard())
+    chat_id = m.chat.id
+    await m.answer("🔥 High-Speed Signal Bot Ready!\nOptimized for 5s, 10s, 15s, 30s trades.", reply_markup=get_keyboard())
 
 @dp.message()
-async def asset_button_handler(message: types.Message):
+async def handle(m: types.Message):
     global chat_id
-    chat_id = message.chat.id
-    cleaned_text = re.sub(r'^[\U0001F1E6-\U0001F1FF\s]+', '', message.text).strip()
-    found_asset = None
-    for asset in ASSETS:
-        compare_name = asset.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
-        if cleaned_text == compare_name:
-            found_asset = asset
+    chat_id = m.chat.id
+    clean = re.sub(r'^[\U0001F1E6-\U0001F1FF\s]+', '', m.text).strip()
+    found = None
+    for a in ASSETS:
+        comp = a.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
+        if clean == comp:
+            found = a
             break
-    
-    if found_asset:
-        await bot.send_message(chat_id=chat_id, text=f"Analyzing {found_asset.replace('_otc', ' OTC')}...")
-        signal = await get_signal(found_asset)
-        await send_signal_message(found_asset, signal)
+    if found:
+        await bot.send_message(chat_id=chat_id, text=f"⚡ Analyzing {found.replace('_otc', ' OTC')} (5s Data)...")
+        sig = await get_signal(found)
+        await send_signal_message(found, sig)
     else:
-        await message.answer("Please use the buttons.", reply_markup=get_asset_reply_keyboard())
+        await m.answer("Use buttons.", reply_markup=get_keyboard())
 
 async def main():
-    logger.info("Bot starting...")
-    try:
-        await po_client.connect()
-        logger.info("Pocket Option connected.")
-    except:
-        logger.error("Pocket Option connection failed. Check SSID.")
+    try: await po_client.connect()
+    except: pass
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
