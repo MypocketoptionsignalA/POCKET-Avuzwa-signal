@@ -45,31 +45,37 @@ def calculate_rsi(series, period=7):
 
 async def get_millionaire_signal(asset):
     """
-    MILLIONAIRE'S SNIPER: Optimized for high-frequency signals with trend safety.
+    MILLIONAIRE'S SNIPER: With SSID Expiration Detection.
     """
     try:
-        # Fetch 5-second and 1-minute candles
+        # Check connection first
+        if not po_client.is_connected:
+            try:
+                await po_client.connect()
+            except:
+                return None, 0, "SSID EXPIRED"
+
+        # Fetch candles
         candles_5s = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
+        
+        if candles_5s.empty or len(candles_5s) < 5:
+            return None, 0, "SSID EXPIRED" # If no data, SSID is likely dead
+        
         candles_1m = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
         
-        if candles_5s.empty or len(candles_5s) < 10:
-            # Fallback for low data
-            return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT, 70, "Momentum"
-        
-        # 1. Major Trend (1-minute SMA 20) - Faster trend detection
+        # 1. Major Trend
         sma_20_1m = candles_1m['close'].rolling(window=20).mean().iloc[-1] if not candles_1m.empty else candles_5s['close'].mean()
         current_price = candles_5s.iloc[-1]['close']
         major_trend_up = current_price > sma_20_1m
         
-        # 2. RSI for 5s
+        # 2. RSI
         rsi = calculate_rsi(candles_5s['close'], 7).iloc[-1]
         
-        # 3. Signal Logic: Prioritize Trend + Momentum
+        # 3. Signal Logic
         direction = None
         confidence = 0
         status = "Scanning..."
 
-        # Strong Trend Reversal (Dip/Peak)
         if major_trend_up and rsi < 40:
             direction = OrderDirection.CALL
             confidence = 85
@@ -79,7 +85,6 @@ async def get_millionaire_signal(asset):
             confidence = 85
             status = "Trend Peak (SELL)"
         else:
-            # Momentum Follower (Ensures a signal is always given)
             last_diff = candles_5s['close'].diff().tail(3).sum()
             if last_diff > 0:
                 direction = OrderDirection.CALL
@@ -94,14 +99,12 @@ async def get_millionaire_signal(asset):
 
     except Exception as e:
         logger.error(f"Error: {e}")
-        return OrderDirection.CALL, 60, "Auto-Signal"
+        return None, 0, "SSID EXPIRED"
 
 def get_asset_keyboard():
     btns = []
     for a in ASSETS:
-        # Simplified display name for buttons
         display_name = a.replace("_otc", " OTC").upper()
-        # Add flags for visual appeal
         flag = "🇺🇸" if "USD" in a else "🇬🇧" if "GBP" in a else "🇪🇺" if "EUR" in a else "🇦🇺" if "AUD" in a else "🇳🇿" if "NZD" in a else "🇨🇦" if "CAD" in a else "🇯🇵" if "JPY" in a else "🇨🇭" if "CHF" in a else "🇦🇪" if "AED" in a else ""
         btns.append(KeyboardButton(text=f"{flag} {display_name}"))
     rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
@@ -118,11 +121,10 @@ def get_timeframe_keyboard():
 @dp.message(Command("start"))
 async def start(m: types.Message, state: FSMContext):
     await state.set_state(TradingStates.selecting_asset)
-    await m.answer("💎 MILLIONAIRE'S SNIPER V2 ACTIVE\nOptimized for AED/CNY & AUD/CHF.", reply_markup=get_asset_keyboard())
+    await m.answer("💎 MILLIONAIRE'S SNIPER V2 ACTIVE\nSSID Status: Monitoring...", reply_markup=get_asset_keyboard())
 
 @dp.message(TradingStates.selecting_asset)
 async def asset_chosen(m: types.Message, state: FSMContext):
-    # Improved matching logic: extract the asset name from the button text
     text = m.text.upper()
     found = None
     for a in ASSETS:
@@ -153,6 +155,11 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
         
         direction, confidence, status = await get_millionaire_signal(asset)
         
+        if status == "SSID EXPIRED":
+            await m.answer("❌ ERROR: SSID EXPIRED\n\nPlease get a fresh SSID from your browser and update it in Railway to continue receiving real signals.", reply_markup=get_asset_keyboard())
+            await state.set_state(TradingStates.selecting_asset)
+            return
+
         emoji = "💎 SNIPER BUY" if direction == OrderDirection.CALL else "💎 SNIPER SELL"
         strength = "🔥 MAXIMUM" if confidence >= 85 else "🟢 HIGH"
         
