@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from pocketoptionapi_async import AsyncPocketOptionClient, OrderDirection
 
 # Configure logging
@@ -48,50 +48,47 @@ def calculate_stochastic(df, k_period=5, d_period=3):
 
 async def get_signal(asset):
     """
-    Triple-Confirmation Strategy: RSI + BB + Stochastic + Momentum.
-    Optimized for maximum win rate on 5s-30s trades.
+    SNIPER STRATEGY: Multi-Timeframe Analysis + Support/Resistance.
+    Designed for maximum accuracy on 5s-30s trades.
     """
     try:
-        candles = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
+        # 1. Get 5-second data (Fast)
+        candles_5s = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
+        # 2. Get 1-minute data (Trend Confirmation)
+        candles_1m = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
         
-        if candles.empty or len(candles) < 20:
-            logger.warning(f"Data unavailable for {asset}.")
+        if candles_5s.empty or len(candles_5s) < 30 or candles_1m.empty:
             return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
         
-        # 1. RSI (Sensitive)
-        candles['RSI'] = calculate_rsi(candles['close'], 7)
+        # --- 1-MINUTE TREND CHECK ---
+        candles_1m['SMA_20'] = candles_1m['close'].rolling(window=20).mean()
+        trend_up = candles_1m.iloc[-1]['close'] > candles_1m.iloc[-1]['SMA_20']
         
-        # 2. Bollinger Bands (Tight)
-        candles['SMA_20'] = candles['close'].rolling(window=20).mean()
-        candles['STD_20'] = candles['close'].rolling(window=20).std()
-        candles['BBU'] = candles['SMA_20'] + (candles['STD_20'] * 2)
-        candles['BBL'] = candles['SMA_20'] - (candles['STD_20'] * 2)
+        # --- 5-SECOND SNIPER ANALYSIS ---
+        candles_5s['RSI'] = calculate_rsi(candles_5s['close'], 7)
+        candles_5s['K'], candles_5s['D'] = calculate_stochastic(candles_5s, 5, 3)
         
-        # 3. Stochastic Oscillator
-        candles['K'], candles['D'] = calculate_stochastic(candles, 5, 3)
+        # Support & Resistance (Last 30 candles)
+        support = candles_5s['low'].tail(30).min()
+        resistance = candles_5s['high'].tail(30).max()
         
-        # 4. Momentum (Price Change)
-        candles['Momentum'] = candles['close'].diff(3)
-        
-        last = candles.iloc[-1]
+        last = candles_5s.iloc[-1]
+        close = last["close"]
         rsi = last["RSI"]
         k, d = last["K"], last["D"]
-        lower_bb, upper_bb = last["BBL"], last["BBU"]
-        close = last["close"]
-        mom = last["Momentum"]
         
-        # --- TRIPLE CONFIRMATION LOGIC ---
+        # --- SNIPER LOGIC ---
         
-        # STRONG BUY: Price at/below BB, RSI Oversold, Stochastic Oversold & Crossing Up
-        if close <= (lower_bb * 1.0001) and rsi <= 25 and k <= 20 and k > d:
+        # SNIPER BUY: At Support + RSI Oversold + Stoch Cross + Trend is UP
+        if close <= (support * 1.0001) and rsi <= 20 and k <= 20 and k > d and trend_up:
             return OrderDirection.CALL
             
-        # STRONG SELL: Price at/above BB, RSI Overbought, Stochastic Overbought & Crossing Down
-        if close >= (upper_bb * 0.9999) and rsi >= 75 and k >= 80 and k < d:
+        # SNIPER SELL: At Resistance + RSI Overbought + Stoch Cross + Trend is DOWN
+        if close >= (resistance * 0.9999) and rsi >= 80 and k >= 80 and k < d and not trend_up:
             return OrderDirection.PUT
             
-        # Fallback: Trend Momentum (if no reversal is clear)
-        if mom > 0 and close > last['SMA_20']:
+        # If no sniper entry, follow the immediate 5s momentum ONLY if it matches 1m trend
+        if trend_up:
             return OrderDirection.CALL
         else:
             return OrderDirection.PUT
@@ -102,8 +99,8 @@ async def get_signal(asset):
 
 async def send_signal_message(asset, direction):
     if not chat_id: return
-    emoji = "💎 STRONG BUY" if direction == OrderDirection.CALL else "🔥 STRONG SELL"
-    text = f"{emoji} SIGNAL! {asset.replace('_otc', ' OTC')}\n\n🎯 Accuracy: High\n⏱ Timeframe: 5s - 30s\n🚀 Enter NOW!"
+    emoji = "🎯 SNIPER BUY" if direction == OrderDirection.CALL else "🎯 SNIPER SELL"
+    text = f"{emoji}! {asset.replace('_otc', ' OTC')}\n\n🛡 Strategy: Sniper (No-Rush)\n⏱ Timeframe: 5s - 30s\n🔥 Enter NOW!"
     await bot.send_message(chat_id=chat_id, text=text)
 
 def get_keyboard():
@@ -119,7 +116,7 @@ def get_keyboard():
 async def start(m: types.Message):
     global chat_id
     chat_id = m.chat.id
-    await m.answer("💎 Triple-Confirmation Bot Active!\nSignals are now stronger and more accurate.", reply_markup=get_keyboard())
+    await m.answer("🎯 SNIPER MODE ACTIVE!\nThis bot now checks multiple timeframes for maximum accuracy.", reply_markup=get_keyboard())
 
 @dp.message()
 async def handle(m: types.Message):
@@ -133,7 +130,7 @@ async def handle(m: types.Message):
             found = a
             break
     if found:
-        await bot.send_message(chat_id=chat_id, text=f"💎 Analyzing {found.replace('_otc', ' OTC')} (Triple Check)...")
+        await bot.send_message(chat_id=chat_id, text=f"🎯 Sniper analyzing {found.replace('_otc', ' OTC')}...")
         sig = await get_signal(found)
         await send_signal_message(found, sig)
     else:
