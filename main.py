@@ -105,8 +105,6 @@ def get_asset_keyboard():
     btns = []
     for a in ASSETS:
         display_name = a.replace("_otc", " OTC").upper()
-        flag1 = "🇺🇸" if "USD" in a else "🇬🇧" if "GBP" in a else "🇪🇺" if "EUR" in a else "🇦🇺" if "AUD" in a else "🇳🇿" if "NZD" in a else "🇨🇦" if "CAD" in a else "🇯🇵" if "JPY" in a else "🇨🇭" if "CHF" in a else "🇦🇪" if "AED" in a else ""
-        flag2 = "🇺🇸" if "USD" in a else "🇬🇧" if "GBP" in a else "🇪🇺" if "EUR" in a else "🇦🇺" if "AUD" in a else "🇳🇿" if "NZD" in a else "🇨🇦" if "CAD" in a else "🇯🇵" if "JPY" in a else "🇨🇭" if "CHF" in a else "🇨🇳" if "CNY" in a else ""
         
         # Custom logic to match the screenshot's flag style for pairs
         if "USDJPY" in a: flag_pair = "🇺🇸/🇯🇵"
@@ -122,7 +120,7 @@ def get_asset_keyboard():
         elif "AUDCAD" in a: flag_pair = "🇦🇺/🇨🇦"
         elif "AUDCHF" in a: flag_pair = "🇦🇺/🇨🇭"
         elif "AEDCNY" in a: flag_pair = "🇦🇪/🇨🇳"
-        else: flag_pair = f"{flag1}/{flag2}" # Fallback
+        else: flag_pair = "🏳️" # Fallback
 
         btns.append([KeyboardButton(text=f"{flag_pair} {display_name}")]) # Each button in its own row
     return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
@@ -145,7 +143,6 @@ async def asset_chosen(m: types.Message, state: FSMContext):
     text = m.text.upper()
     found = None
     for a in ASSETS:
-        # Simplified matching for asset names only, ignoring flags in the input text
         asset_key = a.replace("_otc", "").upper()
         if asset_key in text:
             found = a
@@ -154,7 +151,8 @@ async def asset_chosen(m: types.Message, state: FSMContext):
     if found:
         await state.update_data(asset=found)
         await state.set_state(TradingStates.selecting_timeframe)
-        await m.answer(f"📊 ASSET: {found.replace("_otc", " OTC").upper()}\nSelect Expiration:", reply_markup=get_timeframe_keyboard())
+        display_name = found.replace("_otc", " OTC").upper()
+        await m.answer(f"📊 ASSET: {display_name}\nSelect Expiration:", reply_markup=get_timeframe_keyboard())
     else:
         await m.answer("Please use the buttons provided below.", reply_markup=get_asset_keyboard())
 
@@ -170,7 +168,6 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
         asset = data['asset']
         tf_text = m.text.replace("⏱ ", "")
         
-        # The bot will now immediately give a signal, but still check SSID
         direction, confidence, status = await get_millionaire_signal(asset)
         
         if status == "SSID EXPIRED":
