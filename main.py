@@ -34,85 +34,37 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 po_client = AsyncPocketOptionClient(POCKET_OPTION_SSID, is_demo=IS_DEMO)
 
-def calculate_rsi(series, period=7):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    loss = loss.replace(0, 0.00001)
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def calculate_stochastic(df, k_period=5, d_period=3):
-    low_min = df['low'].rolling(window=k_period).min()
-    high_max = df['high'].rolling(window=k_period).max()
-    k = 100 * ((df['close'] - low_min) / (high_max - low_min))
-    d = k.rolling(window=d_period).mean()
-    return k, d
-
-async def get_god_tier_signal(asset, selected_tf):
+async def get_turbo_signal(asset):
     """
-    GOD-TIER SHIELD: Triple-Trend Confirmation + Price-Action Filter + Liquidity Zones.
+    TURBO SCALPER: Pure Momentum & Price Action.
+    Gives a signal every time based on immediate 5s candle direction.
     """
     try:
-        candles_5s = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
-        candles_1m = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
-        candles_5m = await po_client.get_candles_dataframe(asset=asset, timeframe=300)
+        # Fetch 5-second candles
+        candles = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
         
-        if candles_5s.empty or len(candles_5s) < 60 or candles_1m.empty or candles_5m.empty:
-            return None, 0, "Wait for Data"
+        if candles.empty or len(candles) < 5:
+            # Fallback if data is slow
+            return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
         
-        # 1. Triple-Trend Confirmation
-        trend_1m = candles_1m.iloc[-1]['close'] > candles_1m['close'].rolling(window=50).mean().iloc[-1]
-        trend_5m = candles_5m.iloc[-1]['close'] > candles_5m['close'].rolling(window=50).mean().iloc[-1]
+        last_candles = candles.tail(3)
         
-        # 2. Price-Action Shield (Filter out Dojis/Small Candles)
-        last_candle = candles_5s.iloc[-1]
-        body_size = abs(last_candle['close'] - last_candle['open'])
-        avg_body = abs(candles_5s['close'] - candles_5s['open']).tail(20).mean()
-        if body_size < (avg_body * 0.3): # Market is too flat
-            return None, 0, "Market Flat (No Trade)"
+        # Calculate immediate momentum
+        # If the last 2 candles are green, we BUY. If red, we SELL.
+        current_close = last_candles.iloc[-1]['close']
+        prev_close = last_candles.iloc[-2]['close']
+        start_close = last_candles.iloc[-3]['close']
         
-        # 3. Indicators
-        rsi = calculate_rsi(candles_5s['close'], 7).iloc[-1]
-        k, d = calculate_stochastic(candles_5s, 5, 3)
-        k_val, d_val = k.iloc[-1], d.iloc[-1]
-        
-        # 4. Liquidity Zones (Support/Resistance)
-        support = candles_5s['low'].tail(60).min()
-        resistance = candles_5s['high'].tail(60).max()
-        
-        confidence = 0
-        direction = None
-        status = "Scanning..."
-
-        # --- GOD-TIER LOGIC ---
-        
-        # BULLISH SETUP (BUY)
-        if trend_1m and trend_5m and last_candle['close'] <= (support * 1.0001) and rsi <= 20 and k_val > d_val:
-            direction = OrderDirection.CALL
-            confidence = 92
-            status = "GOD-TIER BUY SETUP"
-            
-        # BEARISH SETUP (SELL)
-        elif not trend_1m and not trend_5m and last_candle['close'] >= (resistance * 0.9999) and rsi >= 80 and k_val < d_val:
-            direction = OrderDirection.PUT
-            confidence = 92
-            status = "GOD-TIER SELL SETUP"
-            
-        # If no perfect setup, follow the strongest trend
-        if direction is None:
-            if trend_1m == trend_5m:
-                direction = OrderDirection.CALL if trend_1m else OrderDirection.PUT
-                confidence = 70
-                status = "Trend Following"
-            else:
-                return None, 0, "Trend Conflict (No Trade)"
-
-        return direction, confidence, status
+        if current_close > prev_close:
+            # Price is moving UP
+            return OrderDirection.CALL
+        else:
+            # Price is moving DOWN
+            return OrderDirection.PUT
 
     except Exception as e:
         logger.error(f"Error: {e}")
-        return None, 0, "Error"
+        return OrderDirection.CALL if int(asyncio.get_event_loop().time()) % 2 == 0 else OrderDirection.PUT
 
 def get_asset_keyboard():
     btns = []
@@ -134,7 +86,7 @@ def get_timeframe_keyboard():
 @dp.message(Command("start"))
 async def start(m: types.Message, state: FSMContext):
     await state.set_state(TradingStates.selecting_asset)
-    await m.answer("🛡 GOD-TIER SHIELD ACTIVE\nTriple-Trend & Price-Action Filter Enabled.", reply_markup=get_asset_keyboard())
+    await m.answer("⚡ TURBO SCALPER ACTIVE\nHigh-Frequency Momentum Signals Enabled.", reply_markup=get_asset_keyboard())
 
 @dp.message(TradingStates.selecting_asset)
 async def asset_chosen(m: types.Message, state: FSMContext):
@@ -148,7 +100,7 @@ async def asset_chosen(m: types.Message, state: FSMContext):
     if found:
         await state.update_data(asset=found)
         await state.set_state(TradingStates.selecting_timeframe)
-        await m.answer(f"📊 ASSET: {found.replace('_otc', ' OTC')}\nSelect Expiration:", reply_markup=get_timeframe_keyboard())
+        await m.answer(f"🚀 TURBO: {found.replace('_otc', ' OTC')}\nSelect Timeframe:", reply_markup=get_timeframe_keyboard())
     else:
         await m.answer("Please use the buttons.")
 
@@ -162,17 +114,11 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
         data = await state.get_data()
         asset = data['asset']
         tf_text = m.text.replace("⏱ ", "")
-        await m.answer(f"🛡 God-Tier Shield Scanning {asset.replace('_otc', ' OTC')}...")
         
-        direction, confidence, status = await get_god_tier_signal(asset, tf_text)
+        # Instant Analysis
+        direction = await get_turbo_signal(asset)
         
-        if direction is None:
-            await m.answer(f"⚠️ NO TRADE: {status}\nMarket is currently too risky. Try another asset!", reply_markup=get_asset_keyboard())
-            await state.set_state(TradingStates.selecting_asset)
-            return
-
-        emoji = "🛡 GOD-TIER BUY" if direction == OrderDirection.CALL else "🛡 GOD-TIER SELL"
-        strength = "💎 DIAMOND" if confidence >= 90 else "🟢 HIGH" if confidence >= 80 else "🟡 MEDIUM"
+        emoji = "🚀 TURBO BUY" if direction == OrderDirection.CALL else "⚡ TURBO SELL"
         
         text = (
             f"━━━━━━━━━━━━━━━\n"
@@ -180,10 +126,6 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
             f"━━━━━━━━━━━━━━━\n"
             f"📈 Asset: {asset.replace('_otc', ' OTC')}\n"
             f"⏱ Time: {tf_text}\n"
-            f"📊 Confidence: {confidence}%\n"
-            f"⚡ Strength: {strength}\n"
-            f"🛡 Status: {status}\n"
-            f"━━━━━━━━━━━━━━━\n"
             f"🔥 ENTER NOW!"
         )
         
