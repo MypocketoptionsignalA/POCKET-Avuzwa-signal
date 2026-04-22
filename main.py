@@ -105,10 +105,27 @@ def get_asset_keyboard():
     btns = []
     for a in ASSETS:
         display_name = a.replace("_otc", " OTC").upper()
-        flag = "🇺🇸" if "USD" in a else "🇬🇧" if "GBP" in a else "🇪🇺" if "EUR" in a else "🇦🇺" if "AUD" in a else "🇳🇿" if "NZD" in a else "🇨🇦" if "CAD" in a else "🇯🇵" if "JPY" in a else "🇨🇭" if "CHF" in a else "🇦🇪" if "AED" in a else ""
-        btns.append(KeyboardButton(text=f"{flag} {display_name}"))
-    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+        flag1 = "🇺🇸" if "USD" in a else "🇬🇧" if "GBP" in a else "🇪🇺" if "EUR" in a else "🇦🇺" if "AUD" in a else "🇳🇿" if "NZD" in a else "🇨🇦" if "CAD" in a else "🇯🇵" if "JPY" in a else "🇨🇭" if "CHF" in a else "🇦🇪" if "AED" in a else ""
+        flag2 = "🇺🇸" if "USD" in a else "🇬🇧" if "GBP" in a else "🇪🇺" if "EUR" in a else "🇦🇺" if "AUD" in a else "🇳🇿" if "NZD" in a else "🇨🇦" if "CAD" in a else "🇯🇵" if "JPY" in a else "🇨🇭" if "CHF" in a else "🇨🇳" if "CNY" in a else ""
+        
+        # Custom logic to match the screenshot's flag style for pairs
+        if "USDJPY" in a: flag_pair = "🇺🇸/🇯🇵"
+        elif "GBPUSD" in a: flag_pair = "🇬🇧/🇺🇸"
+        elif "GBPJPY" in a: flag_pair = "🇬🇧/🇯🇵"
+        elif "EURUSD" in a: flag_pair = "🇪🇺/🇺🇸"
+        elif "AUDUSD" in a: flag_pair = "🇦🇺/🇺🇸"
+        elif "USDCAD" in a: flag_pair = "🇺🇸/🇨🇦"
+        elif "EURJPY" in a: flag_pair = "🇪🇺/🇯🇵"
+        elif "AUDJPY" in a: flag_pair = "🇦🇺/🇯🇵"
+        elif "NZDUSD" in a: flag_pair = "🇳🇿/🇺🇸"
+        elif "EURGBP" in a: flag_pair = "🇪🇺/🇬🇧"
+        elif "AUDCAD" in a: flag_pair = "🇦🇺/🇨🇦"
+        elif "AUDCHF" in a: flag_pair = "🇦🇺/🇨🇭"
+        elif "AEDCNY" in a: flag_pair = "🇦🇪/🇨🇳"
+        else: flag_pair = f"{flag1}/{flag2}" # Fallback
+
+        btns.append([KeyboardButton(text=f"{flag_pair} {display_name}")]) # Each button in its own row
+    return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
 
 def get_timeframe_keyboard():
     btns = [
@@ -128,6 +145,7 @@ async def asset_chosen(m: types.Message, state: FSMContext):
     text = m.text.upper()
     found = None
     for a in ASSETS:
+        # Simplified matching for asset names only, ignoring flags in the input text
         asset_key = a.replace("_otc", "").upper()
         if asset_key in text:
             found = a
@@ -136,7 +154,7 @@ async def asset_chosen(m: types.Message, state: FSMContext):
     if found:
         await state.update_data(asset=found)
         await state.set_state(TradingStates.selecting_timeframe)
-        await m.answer(f"📊 ASSET: {found.replace('_otc', ' OTC').upper()}\nSelect Expiration:", reply_markup=get_timeframe_keyboard())
+        await m.answer(f"📊 ASSET: {found.replace("_otc", " OTC").upper()}\nSelect Expiration:", reply_markup=get_timeframe_keyboard())
     else:
         await m.answer("Please use the buttons provided below.", reply_markup=get_asset_keyboard())
 
@@ -151,8 +169,8 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
         data = await state.get_data()
         asset = data['asset']
         tf_text = m.text.replace("⏱ ", "")
-        await m.answer(f"💎 Sniper Analyzing {asset.replace('_otc', ' OTC').upper()}...")
         
+        # The bot will now immediately give a signal, but still check SSID
         direction, confidence, status = await get_millionaire_signal(asset)
         
         if status == "SSID EXPIRED":
@@ -160,24 +178,13 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
             await state.set_state(TradingStates.selecting_asset)
             return
 
-        emoji = "💎 SNIPER BUY" if direction == OrderDirection.CALL else "💎 SNIPER SELL"
-        strength = "🔥 MAXIMUM" if confidence >= 85 else "🟢 HIGH"
+        # New simplified signal message format
+        if direction == OrderDirection.CALL:
+            signal_text = "⬆️ BUY SIGNAL! 🚀\nEnter NOW 🔥"
+        else:
+            signal_text = "⬇️ SELL SIGNAL! 🚨\nEnter NOW 🔥"
         
-        text = (
-            f"━━━━━━━━━━━━━━━\n"
-            f"{emoji}\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"📈 Asset: {asset.replace('_otc', ' OTC').upper()}\n"
-            f"⏱ Time: {tf_text}\n"
-            f"📊 Confidence: {confidence}%\n"
-            f"⚡ Strength: {strength}\n"
-            f"🛡 Strategy: {status}\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"💰 SUGGESTED: 1-3% of Balance\n"
-            f"🔥 ENTER NOW!"
-        )
-        
-        await m.answer(text, reply_markup=get_asset_keyboard())
+        await m.answer(signal_text, reply_markup=get_asset_keyboard())
         await state.set_state(TradingStates.selecting_asset)
     else:
         await m.answer("Select a valid timeframe using the buttons.")
