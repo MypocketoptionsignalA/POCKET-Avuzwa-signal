@@ -52,6 +52,7 @@ async def get_millionaire_signal(asset):
         if not po_client.is_connected:
             try:
                 await po_client.connect()
+                await asyncio.sleep(1) # Give it a second to stabilize
             except:
                 return None, 0, "SSID EXPIRED"
 
@@ -59,7 +60,12 @@ async def get_millionaire_signal(asset):
         candles_5s = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
         
         if candles_5s.empty or len(candles_5s) < 5:
-            return None, 0, "SSID EXPIRED" # If no data, SSID is likely dead
+            # Try one more time to connect
+            await po_client.connect()
+            await asyncio.sleep(1)
+            candles_5s = await po_client.get_candles_dataframe(asset=asset, timeframe=5)
+            if candles_5s.empty:
+                return None, 0, "SSID EXPIRED"
         
         candles_1m = await po_client.get_candles_dataframe(asset=asset, timeframe=60)
         
@@ -106,7 +112,6 @@ def get_asset_keyboard():
     for a in ASSETS:
         display_name = a.replace("_otc", " OTC").upper()
         
-        # Custom logic to match the screenshot's flag style for pairs
         if "USDJPY" in a: flag_pair = "🇺🇸/🇯🇵"
         elif "GBPUSD" in a: flag_pair = "🇬🇧/🇺🇸"
         elif "GBPJPY" in a: flag_pair = "🇬🇧/🇯🇵"
@@ -120,10 +125,13 @@ def get_asset_keyboard():
         elif "AUDCAD" in a: flag_pair = "🇦🇺/🇨🇦"
         elif "AUDCHF" in a: flag_pair = "🇦🇺/🇨🇭"
         elif "AEDCNY" in a: flag_pair = "🇦🇪/🇨🇳"
-        else: flag_pair = "🏳️" # Fallback
+        else: flag_pair = "🏳️"
 
-        btns.append([KeyboardButton(text=f"{flag_pair} {display_name}")]) # Each button in its own row
-    return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
+        btns.append(KeyboardButton(text=f"{flag_pair} {display_name}"))
+    
+    # Create a square grid (2 buttons per row)
+    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 def get_timeframe_keyboard():
     btns = [
@@ -175,7 +183,6 @@ async def timeframe_chosen(m: types.Message, state: FSMContext):
             await state.set_state(TradingStates.selecting_asset)
             return
 
-        # New simplified signal message format with timeframe
         if direction == OrderDirection.CALL:
             signal_text = f"⬆️ BUY SIGNAL! 🚀\n⏱ Time: {tf_text}\nEnter NOW 🔥"
         else:
