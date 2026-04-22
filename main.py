@@ -23,7 +23,8 @@ IS_DEMO = os.getenv("IS_DEMO", "False").lower() == "true"
 # Assets
 ASSETS = [
     "USDJPY_otc", "GBPUSD_otc", "GBPJPY_otc", "EURUSD_otc", "AUDUSD_otc",
-    "USDCAD_otc", "EURJPY_otc", "AUDJPY_otc", "NZDUSD_otc", "EURGBP_otc"
+    "USDCAD_otc", "EURJPY_otc", "AUDJPY_otc", "NZDUSD_otc", "EURGBP_otc",
+    "AUDCAD_otc", "AUDCHF_otc", "AEDCNY_otc"
 ]
 
 class TradingStates(StatesGroup):
@@ -110,8 +111,8 @@ async def get_millionaire_signal(asset):
 def get_asset_keyboard():
     btns = []
     for a in ASSETS:
-        name = a.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/")
-        flag = "🇺🇸" if "USD" in a else "🇬🇧" if "GBP" in a else "🇪🇺" if "EUR" in a else "🇦🇺" if "AUD" in a else "🇳🇿" if "NZD" in a else "🇨🇦" if "CAD" in a else "🇯🇵" if "JPY" in a else ""
+        name = a.replace("_otc", " OTC").replace("USD", "USD/").replace("GBP", "GBP/").replace("JPY", "JPY/").replace("AUD", "AUD/").replace("NZD", "NZD/").replace("CAD", "CAD/").replace("CHF", "CHF/").replace("AED", "AED/").replace("CNY", "CNY/")
+        flag = "🇺🇸" if "USD" in a else "🇬🇧" if "GBP" in a else "🇪🇺" if "EUR" in a else "🇦🇺" if "AUD" in a else "🇳🇿" if "NZD" in a else "🇨🇦" if "CAD" in a else "🇯🇵" if "JPY" in a else "🇨🇭" if "CHF" in a else "🇦🇪" if "AED" in a else ""
         btns.append(KeyboardButton(text=f"{flag} {name}"))
     rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
