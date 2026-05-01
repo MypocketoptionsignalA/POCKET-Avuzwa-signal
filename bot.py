@@ -16,10 +16,25 @@ PAIRS = ["USD/JPY OTC", "GBP/USD OTC", "GBP/JPY OTC", "EUR/USD OTC", "AUD/USD OT
 # Global API
 po_api = None
 
+po_api = None
+
 async def init_pocket_api():
     global po_api
     if not POCKET_SSID:
-        logger.warning("No POCKET_SSID provided.")
+        logger.warning("No POCKET_SSID provided")
+        return False
+
+    try:
+        po_api = PocketOptionClient(POCKET_SSID, is_demo=USE_DEMO)
+        success, msg = po_api.connect()
+        if success:
+            logger.info(f"✅ Pocket Option connected | Demo: {USE_DEMO}")
+            return True
+        else:
+            logger.error(f"Connection failed: {msg}")
+            return False
+    except Exception as e:
+        logger.error(f"Pocket Option init error: {e}")
         return False
 
     try:
@@ -64,9 +79,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = query.from_user.id
 
-    if user_id != ADMIN_USER_ID:
-        await query.edit_message_text("❌ Unauthorized.")
-        return
+    if po_api:
+            try:
+                success = po_api.buy(
+                    asset=pair,
+                    amount=DEFAULT_AMOUNT,
+                    direction=direction,
+                    duration=expiration
+                )
+                if success:
+                    await query.message.reply_text("✅ Trade executed on Pocket Option!")
+                else:
+                    await query.message.reply_text("⚠️ Failed to place trade.")
+            except Exception as e:
+                await query.message.reply_text(f"⚠️ Trade error: {str(e)[:100]}")
 
     data = query.data
 
