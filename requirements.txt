@@ -1,4 +1,0 @@
-python-telegram-bot==21.4
-python-dotenv
-git+https://github.com/A11ksa/API-Pocket-Option.git
-# Alternative if above has issues: git+https://github.com/ChipaDevTeam/PocketOptionAPI.git
