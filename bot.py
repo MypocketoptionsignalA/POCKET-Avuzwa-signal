@@ -6,9 +6,10 @@ import numpy as np
 from telegram import Bot
 from datetime import datetime
 
-# === CONFIG ===
-TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("ADMIN_USER_ID")  # you become the receiver
+USER_SSID = os.getenv("USER_SSID")
+
 
 TIMEFRAME = "1m"
 LIMIT = 100
