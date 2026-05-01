@@ -111,7 +111,7 @@ def run():
                 continue
 
             if losing_streak >= 3:
-                bot.send_message(chat_id=CHAT_ID, text="🛑 Bot paused (losing streak)")
+                bot.send_message(TELEGRAM_BOT_TOKEN,TELEGRAM_BOT_TOKENtext="🛑 Bot paused (losing streak)")
                 time.sleep(600)
                 continue
 
@@ -147,7 +147,7 @@ def run():
 Wins: {wins} | Losses: {losses}
 """
 
-                    bot.send_message(chat_id=CHAT_ID, text=message)
+                    bot.send_message(TELEGRAM_BOT_TOKEN =TELEGRAM_BOT_TOKEN, text=message)
 
             time.sleep(60)
 
