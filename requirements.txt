@@ -1,0 +1,5 @@
+python-telegram-bot==21.4
+MetaTrader5
+python-dotenv
+requests
+asyncio
