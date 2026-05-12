@@ -1,0 +1,5 @@
+aiogram==3.13.0
+pandas==2.2.2
+pandas_ta==0.3.14b
+python-dotenv==1.0.1
+websocket-client==1.8.0
