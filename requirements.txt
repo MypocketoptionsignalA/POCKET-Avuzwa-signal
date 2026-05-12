@@ -1,5 +1,0 @@
-aiogram==3.13.0
-pandas
-pandas_ta
-python-dotenv
-git+https://github.com/A11ksa/API-Pocket-Option.git
